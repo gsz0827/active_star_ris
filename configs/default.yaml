@@ -1,0 +1,181 @@
+seed: 20260719
+
+system:
+  num_elements: 32
+  num_active_elements: 8
+  transmit_power: 1.0
+  user_noise_variance: 0.01
+  ris_internal_noise_variance: 0.002
+  ris_output_power_budget: 35.0
+  maximum_active_amplitude: 3.0
+  beta_transmission: 0.50
+  transmission_weight: 0.50
+  reflection_weight: 0.50
+
+channel:
+  alice_to_ris:
+    model: rician
+    k_factor_db: 5.0
+    large_scale_power: 1.0
+  ris_to_transmission_user:
+    model: rician
+    k_factor_db: 3.0
+    large_scale_power: 1.0
+  ris_to_reflection_user:
+    model: rician
+    k_factor_db: 3.0
+    large_scale_power: 1.0
+  direct_transmission:
+    model: rayleigh
+    large_scale_power: 0.05
+  direct_reflection:
+    model: rayleigh
+    large_scale_power: 0.05
+
+csi:
+  nmse_db_min: -25.0
+  nmse_db_max: -10.0
+  default_nmse_db: -15.0
+
+  evaluation_nmse_db:
+    - -30.0
+    - -25.0
+    - -20.0
+    - -15.0
+    - -10.0
+    - -5.0
+    - 0.0
+
+  evaluation_trials: 100
+
+surface_power:
+  controller_pilot_power: 1.0
+  transmission_user_pilot_power: 1.0
+  reflection_user_pilot_power: 1.0
+
+  robust_margin_multiplier: 3.0
+
+  amplifier_efficiency: 0.35
+  controller_static_power: 0.10
+  active_element_bias_power: 0.01
+
+  evaluation_nmse_db:
+    - -30.0
+    - -25.0
+    - -20.0
+    - -15.0
+    - -10.0
+    - -5.0
+    - 0.0
+  evaluation_trials: 100
+
+optimization:
+  beta_grid_min: 0.05
+  beta_grid_max: 0.95
+  beta_grid_points: 19
+  
+  elementwise_beta_min: 0.05
+  elementwise_beta_max: 0.95
+  elementwise_beta_temperature: 1.0
+
+simulation:
+  monte_carlo_trials: 1000
+  sweep_num_elements: [8, 16, 32, 64]
+  sweep_active_ratios: [0.0, 0.125, 0.25, 0.5]
+
+checks:
+  maximum_energy_error: 1.0e-12
+  maximum_power_violation: 1.0e-10
+
+# 第一步新增：统一非理想联合性能评价。
+hardware_impairments:
+  static_gain_error_std_db: 0.20
+  directional_gain_error_std_db: 0.10
+  static_phase_error_std_rad: 0.05
+  directional_phase_error_std_rad: 0.03
+  gain_scale_min: 0.25
+  gain_scale_max: 4.0
+
+joint_objective:
+  key_rate_weight: 1.0
+  key_disagreement_weight: 1.0
+  reciprocity_weight: 0.5
+  surface_power_weight: 0.1
+  constraint_violation_weight: 10.0
+
+  key_rate_reference: 10.0
+  key_disagreement_reference: 0.5
+  surface_power_reference: 1.0
+
+  probing_samples_per_evaluation: 128
+
+# 第二步新增：强化学习连续动作的物理映射与鲁棒功率投影。
+action_mapping:
+  beta_min: 0.05
+  beta_max: 0.95
+  allow_active_bypass: true
+
+  # actor输出动作顺序：
+  # [active_gain_controls,
+  #  transmission_phases,
+  #  reflection_phases,
+  #  transmission_energy_splits]
+  normalized_action_min: -1.0
+  normalized_action_max: 1.0
+
+# 第三步新增：可直接由TD3调用的鲁棒强化学习环境。
+rl_environment:
+  max_episode_steps: 64
+  probing_samples_per_step: 128
+
+  # 相邻决策时隙与单次探测块内部的信道相关系数。
+  channel_temporal_correlation: 0.95
+  probing_sample_correlation: 0.995
+
+  # 状态由估计CSI、非理想统计上下文和上一时隙性能组成。
+  include_impairment_context: true
+  include_previous_metrics: true
+  state_clip: 5.0
+
+  domain_randomization:
+    nmse_db_min: -25.0
+    nmse_db_max: -10.0
+
+    ris_internal_noise_variance_min: 0.001
+    ris_internal_noise_variance_max: 0.004
+    receiver_noise_variance_min: 0.005
+    receiver_noise_variance_max: 0.020
+    output_power_budget_min: 30.0
+    output_power_budget_max: 40.0
+
+    static_gain_error_std_db_min: 0.10
+    static_gain_error_std_db_max: 0.30
+    directional_gain_error_std_db_min: 0.05
+    directional_gain_error_std_db_max: 0.15
+    static_phase_error_std_rad_min: 0.02
+    static_phase_error_std_rad_max: 0.08
+    directional_phase_error_std_rad_min: 0.01
+    directional_phase_error_std_rad_max: 0.05
+
+# 第四步新增：PyTorch TD3智能体与训练循环。
+td3:
+  hidden_dimensions: [256, 256]
+  actor_learning_rate: 3.0e-4
+  critic_learning_rate: 3.0e-4
+  discount_factor: 0.99
+  soft_update_rate: 0.005
+  target_policy_noise: 0.20
+  target_noise_clip: 0.50
+  policy_delay: 2
+  exploration_noise_std: 0.10
+  maximum_gradient_norm: 10.0
+
+td3_training:
+  total_environment_steps: 100000
+  replay_capacity: 200000
+  random_action_steps: 2000
+  learning_starts: 2000
+  batch_size: 256
+  gradient_steps_per_environment_step: 1
+  evaluation_interval: 5000
+  evaluation_episodes: 10
