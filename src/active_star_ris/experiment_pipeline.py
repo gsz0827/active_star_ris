@@ -1047,6 +1047,17 @@ def run_single_experiment(
         exist_ok=True,
     )
 
+    # 固定验证集用于周期模型选择。
+    validation_seed = int(
+        evaluation_seed
+    )
+
+    # 独立测试集只用于训练完成后的最终详细评价，
+    # 避免验证场景和最终测试场景重合。
+    final_test_seed = int(
+        evaluation_seed + 1_000_000
+    )
+
     environment_config = (
         build_environment_config(
             raw_config,
@@ -1083,9 +1094,7 @@ def run_single_experiment(
     evaluation_environment = (
         RobustActiveStarRISEnv(
             environment_config,
-            seed=(
-                evaluation_seed
-            ),
+            seed=validation_seed,
         )
     )
 
@@ -1174,6 +1183,7 @@ def run_single_experiment(
         evaluation_environment=(
             evaluation_environment
         ),
+        evaluation_seed=validation_seed,
         progress_callback=(
             progress_callback
         ),
@@ -1220,10 +1230,20 @@ def run_single_experiment(
         output_directory,
     )
 
+    # 正式最终评价使用验证集上表现最好的检查点，
+    # 而不是训练最后一步的模型。
+    best_checkpoint_extra = (
+        agent.load_checkpoint(
+            best_checkpoint,
+            load_optimizers=False,
+        )
+    )
+
+    # 使用独立测试随机种子，不与周期验证集重合。
     detailed_environment = (
         RobustActiveStarRISEnv(
             environment_config,
-            seed=evaluation_seed,
+            seed=final_test_seed,
         )
     )
 
@@ -1233,9 +1253,7 @@ def run_single_experiment(
         episodes=(
             final_evaluation_episodes
         ),
-        evaluation_seed=(
-            evaluation_seed
-        ),
+        evaluation_seed=final_test_seed,
         scenario=scenario,
         training_seed=seed,
         output_directory=(
@@ -1279,6 +1297,18 @@ def run_single_experiment(
             ),
             "final_checkpoint": str(
                 final_checkpoint
+            ),
+            "validation_seed": int(
+                validation_seed
+            ),
+            "final_test_seed": int(
+                final_test_seed
+            ),
+            "evaluated_checkpoint": str(
+                best_checkpoint
+            ),
+            "evaluated_checkpoint_extra": (
+                best_checkpoint_extra
             ),
         }
     )

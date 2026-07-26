@@ -337,6 +337,7 @@ def train_td3(
     config: TD3TrainingConfig | None = None,
     *,
     evaluation_environment: RobustActiveStarRISEnv | None = None,
+    evaluation_seed: int | None = None,
     progress_callback: (
         Callable[
             [int, TD3TrainingHistory],
@@ -353,6 +354,14 @@ def train_td3(
         else config
     )
     training_config.validate()
+
+    # 所有周期检查点使用相同的一组验证场景。
+    # 未显式提供时，保留基于训练种子的确定性默认值。
+    fixed_evaluation_seed = (
+        training_config.seed + 100_000
+        if evaluation_seed is None
+        else int(evaluation_seed)
+    )
 
     replay_buffer = ReplayBuffer(
         environment.state_dim,
@@ -472,11 +481,7 @@ def train_td3(
                 episodes=(
                     training_config.evaluation_episodes
                 ),
-                seed=(
-                    training_config.seed
-                    + 100_000
-                    + step
-                ),
+                seed=fixed_evaluation_seed,
             )
 
             history.evaluation_steps.append(
@@ -582,10 +587,7 @@ def train_td3(
             episodes=(
                 training_config.evaluation_episodes
             ),
-            seed=(
-                training_config.seed
-                + 999_999
-            ),
+            seed=fixed_evaluation_seed,
         )
 
     return TD3TrainingResult(
