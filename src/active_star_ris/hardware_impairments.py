@@ -19,13 +19,13 @@ class HardwareMismatchParameters:
     # 前向和反向共同存在的静态增益误差
     static_gain_error_std_db: float = 0.0
 
-    # 前向和反向各自独立的增益误差
+    # 前向和反向各自独立、在一个episode内固定的方向相关增益偏差
     directional_gain_error_std_db: float = 0.0
 
-    # 前向和反向共同存在的静态相位误差
+    # 前向和反向共同存在、在一个episode内固定的静态相位偏差
     static_phase_error_std_rad: float = 0.0
 
-    # 前向和反向各自独立的相位抖动
+    # 前向和反向各自独立、在一个episode内固定的方向相关相位偏差
     directional_phase_error_std_rad: float = 0.0
 
     # 有源单元实际增益比例的上下界

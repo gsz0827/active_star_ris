@@ -373,6 +373,10 @@ class RobustActiveStarRISEnv:
         self._channels: EnvironmentChannels | None = None
         self._estimates: EnvironmentEstimates | None = None
         self._episode_domain: EpisodeDomain | None = None
+
+        # 同一episode内固定硬件失配 realization。
+        self._hardware_seed: int | None = None
+
         self._step_index = 0
         self._previous_metrics = np.zeros(5, dtype=np.float64)
         self._last_diagnostics: EnvironmentStepDiagnostics | None = None
@@ -825,6 +829,15 @@ class RobustActiveStarRISEnv:
             self._initial_seed = None
 
         self._episode_domain = self._sample_episode_domain()
+
+        self._hardware_seed = int(
+            self._rng.integers(
+                low=0,
+                high=np.iinfo(np.int64).max,
+                dtype=np.int64,
+            )
+        )
+
         self._channels = self._sample_initial_channels()
         self._estimates = self._make_estimates()
         self._step_index = 0
@@ -837,16 +850,29 @@ class RobustActiveStarRISEnv:
         self,
         action: ArrayLike,
     ) -> tuple[Float32Array, float, bool, bool, dict[str, Any]]:
-        if self._channels is None or self._estimates is None:
-            raise RuntimeError("reset must be called before step")
-        action_array = np.asarray(action, dtype=np.float64).reshape(-1)
+        if (
+            self._channels is None
+            or self._estimates is None
+            or self._hardware_seed is None
+        ):
+            raise RuntimeError(
+                "reset must be called before step"
+            )
+
+        action_array = np.asarray(
+            action,
+            dtype=np.float64,
+        ).reshape(-1)
+
         if action_array.size != self.action_dim:
             raise ValueError(
                 f"action must contain {self.action_dim} entries"
             )
-        if not np.all(np.isfinite(action_array)):
-            raise ValueError("action must contain only finite values")
 
+        if not np.all(np.isfinite(action_array)):
+            raise ValueError(
+                "action must contain only finite values"
+            )
         projection = map_and_project_action(
             action_array,
             active_mask=self.active_mask,
@@ -893,6 +919,9 @@ class RobustActiveStarRISEnv:
             transmission_weight=self.config.transmission_weight,
             reflection_weight=self.config.reflection_weight,
             hardware_parameters=domain.hardware_parameters,
+            hardware_rng=np.random.default_rng(
+                self._hardware_seed
+            ),
             objective_config=self.config.objective,
             rng=self._rng,
         )

@@ -125,3 +125,92 @@ def test_episode_domain_stays_inside_randomization_ranges():
     assert 12.0 <= domain.output_power_budget <= 13.0
     assert 0.15 <= domain.hardware_parameters.static_gain_error_std_db <= 0.16
     assert 0.02 <= domain.hardware_parameters.directional_phase_error_std_rad <= 0.03
+
+
+def test_hardware_mismatch_is_fixed_within_episode():
+    randomization = DomainRandomizationConfig(
+        nmse_db_min=-20.0,
+        nmse_db_max=-20.0,
+        ris_internal_noise_variance_min=0.002,
+        ris_internal_noise_variance_max=0.002,
+        receiver_noise_variance_min=0.01,
+        receiver_noise_variance_max=0.01,
+        output_power_budget_min=20.0,
+        output_power_budget_max=20.0,
+        static_gain_error_std_db_min=0.50,
+        static_gain_error_std_db_max=0.50,
+        directional_gain_error_std_db_min=0.25,
+        directional_gain_error_std_db_max=0.25,
+        static_phase_error_std_rad_min=0.20,
+        static_phase_error_std_rad_max=0.20,
+        directional_phase_error_std_rad_min=0.10,
+        directional_phase_error_std_rad_max=0.10,
+    )
+
+    env = RobustActiveStarRISEnv(
+        RobustEnvironmentConfig(
+            num_elements=8,
+            num_active_elements=2,
+            max_episode_steps=4,
+            probing_samples_per_step=32,
+            domain_randomization=randomization,
+        ),
+        seed=123,
+    )
+
+    env.reset()
+    action = np.zeros(
+        env.action_dim,
+        dtype=np.float32,
+    )
+
+    env.step(action)
+    assert env.last_diagnostics is not None
+    first = (
+        env.last_diagnostics
+        .objective
+        .hardware_mismatch
+    )
+
+    env.step(action)
+    assert env.last_diagnostics is not None
+    second = (
+        env.last_diagnostics
+        .objective
+        .hardware_mismatch
+    )
+
+    fields = (
+        "static_gain_scale",
+        "forward_directional_gain_scale",
+        "reverse_directional_gain_scale",
+        "static_phase_error_transmission",
+        "static_phase_error_reflection",
+        "forward_phase_jitter_transmission",
+        "reverse_phase_jitter_transmission",
+        "forward_phase_jitter_reflection",
+        "reverse_phase_jitter_reflection",
+    )
+
+    # 同一episode内，硬件实现必须保持不变。
+    for field_name in fields:
+        np.testing.assert_allclose(
+            getattr(first, field_name),
+            getattr(second, field_name),
+        )
+
+    # 新episode应当对应新的设备误差实现。
+    env.reset()
+    env.step(action)
+
+    assert env.last_diagnostics is not None
+    third = (
+        env.last_diagnostics
+        .objective
+        .hardware_mismatch
+    )
+
+    assert not np.allclose(
+        first.static_gain_scale,
+        third.static_gain_scale,
+    )

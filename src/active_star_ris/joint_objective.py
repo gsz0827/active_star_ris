@@ -221,6 +221,7 @@ def evaluate_joint_objective(
     transmission_weight: float = 0.5,
     reflection_weight: float = 0.5,
     hardware_parameters: HardwareMismatchParameters | None = None,
+    hardware_rng: np.random.Generator | None = None,
     objective_config: JointObjectiveConfig | None = None,
     rng: np.random.Generator | None = None,
 ) -> JointObjectiveResult:
@@ -249,6 +250,12 @@ def evaluate_joint_objective(
         else rng
     )
 
+    hardware_generator = (
+        generator
+        if hardware_rng is None
+        else hardware_rng
+    )
+
     ideal_pair = _surface_to_star_pair(
         ideal_surface
     )
@@ -256,7 +263,7 @@ def evaluate_joint_objective(
         ideal_coefficients=ideal_pair,
         active_mask=ideal_surface.active_mask,
         parameters=parameters,
-        rng=generator,
+        rng=hardware_generator,
     )
 
     key_result = simulate_dual_side_key_generation(
