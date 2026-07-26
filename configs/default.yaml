@@ -210,3 +210,32 @@ td3_training:
   gradient_steps_per_environment_step: 1
   evaluation_interval: 5000
   evaluation_episodes: 10
+
+# 统一训练、三种结构基线与消融实验。
+experiment_suite:
+  output_directory: results/full_experiment_suite
+
+  # 正式论文实验建议至少3个训练随机种子。
+  seeds: [0, 1, 2]
+
+  # 所有结构和消融使用同一组评价种子，保证公平比较。
+  evaluation_seed: 500000
+  final_evaluation_episodes: 30
+
+  # 部分有源结构中的有源单元数量。
+  partial_active_elements: 8
+
+  baselines:
+    - passive
+    - partially_active
+    - fully_active
+
+  ablations:
+    - full_model
+    - no_internal_noise
+    - perfect_csi
+    - no_hardware_mismatch
+    - no_amplitude_phase_coupling
+    - no_cvar
+    - no_surface_power_penalty
+    
