@@ -263,7 +263,12 @@ def evaluate_joint_objective(
         ideal_coefficients=ideal_pair,
         active_mask=ideal_surface.active_mask,
         parameters=parameters,
+
+        # episode内固定的制造误差和方向非互易误差。
         rng=hardware_generator,
+
+        # 每次step变化的快速相位抖动。
+        dynamic_rng=generator,
     )
 
     key_result = simulate_dual_side_key_generation(

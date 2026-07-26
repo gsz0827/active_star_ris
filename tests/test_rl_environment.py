@@ -145,6 +145,12 @@ def test_hardware_mismatch_is_fixed_within_episode():
         static_phase_error_std_rad_max=0.20,
         directional_phase_error_std_rad_min=0.10,
         directional_phase_error_std_rad_max=0.10,
+        fast_phase_jitter_std_rad_min=0.10,
+        fast_phase_jitter_std_rad_max=0.10,
+        transmission_amplitude_phase_coupling_rad_per_db_min=0.05,
+        transmission_amplitude_phase_coupling_rad_per_db_max=0.05,
+        reflection_amplitude_phase_coupling_rad_per_db_min=0.08,
+        reflection_amplitude_phase_coupling_rad_per_db_max=0.08,
     )
 
     env = RobustActiveStarRISEnv(
@@ -180,7 +186,7 @@ def test_hardware_mismatch_is_fixed_within_episode():
         .hardware_mismatch
     )
 
-    fields = (
+    fixed_fields = (
         "static_gain_scale",
         "forward_directional_gain_scale",
         "reverse_directional_gain_scale",
@@ -190,14 +196,34 @@ def test_hardware_mismatch_is_fixed_within_episode():
         "reverse_phase_jitter_transmission",
         "forward_phase_jitter_reflection",
         "reverse_phase_jitter_reflection",
+        "forward_amplitude_phase_coupling_transmission",
+        "reverse_amplitude_phase_coupling_transmission",
+        "forward_amplitude_phase_coupling_reflection",
+        "reverse_amplitude_phase_coupling_reflection",
     )
 
     # 同一episode内，硬件实现必须保持不变。
-    for field_name in fields:
+    for field_name in fixed_fields:
         np.testing.assert_allclose(
             getattr(first, field_name),
             getattr(second, field_name),
         )
+
+    fast_fields = (
+        "forward_fast_phase_jitter_transmission",
+        "reverse_fast_phase_jitter_transmission",
+        "forward_fast_phase_jitter_reflection",
+        "reverse_fast_phase_jitter_reflection",
+    )
+
+    # 同一episode内，快速抖动应随step变化。
+    assert any(
+        not np.allclose(
+            getattr(first, field_name),
+            getattr(second, field_name),
+        )
+        for field_name in fast_fields
+    )
 
     # 新episode应当对应新的设备误差实现。
     env.reset()

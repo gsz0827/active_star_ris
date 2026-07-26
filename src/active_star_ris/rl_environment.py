@@ -95,6 +95,18 @@ class DomainRandomizationConfig:
     directional_phase_error_std_rad_min: float = 0.01
     directional_phase_error_std_rad_max: float = 0.05
 
+    # 每次探测变化的快速相位抖动。
+    fast_phase_jitter_std_rad_min: float = 0.005
+    fast_phase_jitter_std_rad_max: float = 0.020
+
+    # 有源单元透射支路的幅相耦合系数，单位rad/dB。
+    transmission_amplitude_phase_coupling_rad_per_db_min: float = 0.0
+    transmission_amplitude_phase_coupling_rad_per_db_max: float = 0.03
+
+    # 有源单元反射支路的幅相耦合系数，单位rad/dB。
+    reflection_amplitude_phase_coupling_rad_per_db_min: float = 0.0
+    reflection_amplitude_phase_coupling_rad_per_db_max: float = 0.03
+
     def validate(self) -> None:
         pairs = {
             "nmse_db": (self.nmse_db_min, self.nmse_db_max),
@@ -126,6 +138,22 @@ class DomainRandomizationConfig:
                 self.directional_phase_error_std_rad_min,
                 self.directional_phase_error_std_rad_max,
             ),
+            "fast_phase_jitter_std_rad": (
+                self.fast_phase_jitter_std_rad_min,
+                self.fast_phase_jitter_std_rad_max,
+            ),
+            "transmission_amplitude_phase_coupling_rad_per_db": (
+                self
+                .transmission_amplitude_phase_coupling_rad_per_db_min,
+                self
+                .transmission_amplitude_phase_coupling_rad_per_db_max,
+            ),
+            "reflection_amplitude_phase_coupling_rad_per_db": (
+                self
+                .reflection_amplitude_phase_coupling_rad_per_db_min,
+                self
+                .reflection_amplitude_phase_coupling_rad_per_db_max,
+            ),
         }
         for name, (lower, upper) in pairs.items():
             if not np.isfinite(lower) or not np.isfinite(upper):
@@ -148,6 +176,17 @@ class DomainRandomizationConfig:
             ),
             "directional_phase_error_std_rad_min": (
                 self.directional_phase_error_std_rad_min
+            ),
+            "fast_phase_jitter_std_rad_min": (
+                self.fast_phase_jitter_std_rad_min
+            ),
+            "transmission_amplitude_phase_coupling_rad_per_db_min": (
+                self
+                .transmission_amplitude_phase_coupling_rad_per_db_min
+            ),
+            "reflection_amplitude_phase_coupling_rad_per_db_min": (
+                self
+                .reflection_amplitude_phase_coupling_rad_per_db_min
             ),
         }
         for name, value in nonnegative.items():
@@ -426,7 +465,10 @@ class RobustActiveStarRISEnv:
         # direct links.
         dimension = 6 * self.config.num_elements + 4
         if self.config.include_impairment_context:
-            dimension += 8
+            # NMSE、内部噪声、接收噪声、功率预算，
+            # 两类增益误差、两类固定相位误差，
+            # 快速抖动、透射幅相耦合、反射幅相耦合。
+            dimension += 11
         if self.config.include_previous_metrics:
             dimension += 5
         return dimension
@@ -463,6 +505,29 @@ class RobustActiveStarRISEnv:
                 self._rng,
                 dr.directional_phase_error_std_rad_min,
                 dr.directional_phase_error_std_rad_max,
+            ),
+            fast_phase_jitter_std_rad=self._sample_uniform(
+                self._rng,
+                dr.fast_phase_jitter_std_rad_min,
+                dr.fast_phase_jitter_std_rad_max,
+            ),
+            transmission_amplitude_phase_coupling_rad_per_db=(
+                self._sample_uniform(
+                    self._rng,
+                    dr
+                    .transmission_amplitude_phase_coupling_rad_per_db_min,
+                    dr
+                    .transmission_amplitude_phase_coupling_rad_per_db_max,
+                )
+            ),
+            reflection_amplitude_phase_coupling_rad_per_db=(
+                self._sample_uniform(
+                    self._rng,
+                    dr
+                    .reflection_amplitude_phase_coupling_rad_per_db_min,
+                    dr
+                    .reflection_amplitude_phase_coupling_rad_per_db_max,
+                )
             ),
         )
         return EpisodeDomain(
@@ -678,6 +743,27 @@ class RobustActiveStarRISEnv:
                         hp.directional_phase_error_std_rad,
                         dr.directional_phase_error_std_rad_min,
                         dr.directional_phase_error_std_rad_max,
+                    ),
+                    self._range_normalize(
+                        hp.fast_phase_jitter_std_rad,
+                        dr.fast_phase_jitter_std_rad_min,
+                        dr.fast_phase_jitter_std_rad_max,
+                    ),
+                    self._range_normalize(
+                        hp
+                        .transmission_amplitude_phase_coupling_rad_per_db,
+                        dr
+                        .transmission_amplitude_phase_coupling_rad_per_db_min,
+                        dr
+                        .transmission_amplitude_phase_coupling_rad_per_db_max,
+                    ),
+                    self._range_normalize(
+                        hp
+                        .reflection_amplitude_phase_coupling_rad_per_db,
+                        dr
+                        .reflection_amplitude_phase_coupling_rad_per_db_min,
+                        dr
+                        .reflection_amplitude_phase_coupling_rad_per_db_max,
                     ),
                 ],
                 dtype=np.float64,
