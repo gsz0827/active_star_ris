@@ -40,14 +40,11 @@ def test_three_structure_action_dimensions():
         num_active_elements=8,
         quick=True,
     )
-    fully_active = (
-        build_environment_config(
-            config,
-            num_active_elements=(
-                num_elements
-            ),
-            quick=True,
-        )
+    fully_active = build_environment_config(
+        config,
+        num_active_elements=num_elements,
+        quick=True,
+        allow_active_bypass_override=False,
     )
 
     # 动作包括3N个透射/反射相位和能量分配控制，
@@ -64,6 +61,16 @@ def test_three_structure_action_dimensions():
         fully_active.num_active_elements
         == num_elements
     )
+    assert not fully_active.allow_active_bypass
+
+    partial = build_environment_config(
+        config,
+        num_active_elements=8,
+        quick=True,
+        allow_active_bypass_override=True,
+    )
+
+    assert partial.allow_active_bypass
 
 
 def test_ablation_configuration_is_applied():
