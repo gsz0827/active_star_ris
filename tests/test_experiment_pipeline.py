@@ -108,8 +108,43 @@ def test_ablation_configuration_is_applied():
 
 def test_single_experiment_writes_outputs(
     tmp_path,
+    monkeypatch,
 ):
     config = load_default_config()
+
+    from active_star_ris.td3_agent import (
+        TD3Agent,
+    )
+
+    loaded_checkpoints: list[Path] = []
+
+    original_load_checkpoint = (
+        TD3Agent.load_checkpoint
+    )
+
+    def tracking_load_checkpoint(
+        self,
+        path,
+        *,
+        load_optimizers=True,
+    ):
+        loaded_checkpoints.append(
+            Path(path)
+        )
+
+        return original_load_checkpoint(
+            self,
+            path,
+            load_optimizers=(
+                load_optimizers
+            ),
+        )
+
+    monkeypatch.setattr(
+        TD3Agent,
+        "load_checkpoint",
+        tracking_load_checkpoint,
+    )
 
     summary = run_single_experiment(
         config,
@@ -161,3 +196,45 @@ def test_single_experiment_writes_outputs(
             / "smoke"
             / filename
         ).exists()
+
+    # 最终详细评价必须实际加载过检查点。
+    assert loaded_checkpoints
+
+    # 最后加载的检查点应当是验证集表现最佳的best.pt。
+    assert (
+        loaded_checkpoints[-1].name
+        == "best.pt"
+    )
+
+    expected_best_checkpoint = (
+        tmp_path
+        / "smoke"
+        / "checkpoints"
+        / "best.pt"
+    )
+
+    assert (
+        Path(
+            summary["evaluated_checkpoint"]
+        )
+        == expected_best_checkpoint
+    )
+
+    # 验证集种子和独立测试集种子应当分离。
+    assert (
+        summary["validation_seed"]
+        == 900
+    )
+
+    assert (
+        summary["final_test_seed"]
+        == 1_000_900
+    )
+
+    # best.pt的附加信息应被读取并写入结果。
+    assert isinstance(
+        summary[
+            "evaluated_checkpoint_extra"
+        ],
+        dict,
+    )
