@@ -589,3 +589,68 @@ def test_vector_beta_surface_design_is_nonuniform():
         .shape
         == (4,)
     )
+
+
+def test_surface_power_breakdown_sums_to_total():
+    surface = _make_surface(
+        amplitude=1.0
+    )
+
+    channel = np.ones(
+        4,
+        dtype=np.complex128,
+    )
+
+    result = evaluate_bidirectional_surface_power(
+        controller_to_ris=channel,
+        transmission_user_to_ris=channel,
+        reflection_user_to_ris=channel,
+        surface=surface,
+        controller_pilot_power=1.0,
+        transmission_user_pilot_power=1.0,
+        reflection_user_pilot_power=1.0,
+        ris_internal_noise_variance=0.0,
+        output_power_budget=100.0,
+        amplifier_efficiency=1.0,
+        controller_static_power=0.40,
+        passive_element_control_power=0.10,
+        active_element_control_power=0.20,
+        active_element_bias_power=0.05,
+        switching_network_static_power=0.30,
+    )
+
+    expected_total = (
+        result.controller_static_power
+        + result.passive_element_control_power
+        + result.active_element_control_power
+        + result.active_element_bias_power
+        + result.switching_network_power
+        + result.amplifier_dc_power
+    )
+
+    assert np.isclose(
+        result.total_surface_power,
+        expected_total,
+    )
+
+    # _make_surface中包含两个有源和两个无源单元。
+    assert np.isclose(
+        result.passive_element_control_power,
+        2 * 0.10,
+    )
+
+    assert np.isclose(
+        result.active_element_control_power,
+        2 * 0.20,
+    )
+
+    assert np.isclose(
+        result.active_element_bias_power,
+        2 * 0.05,
+    )
+
+    # 单位增益不产生额外放大RF功率。
+    assert np.isclose(
+        result.amplifier_additional_rf_power,
+        0.0,
+    )

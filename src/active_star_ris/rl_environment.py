@@ -260,8 +260,21 @@ class RobustEnvironmentConfig:
     reflection_user_pilot_power: float = 1.0
 
     amplifier_efficiency: float = 0.35
+
+    # STAR-RIS固定控制器功耗，单位W。
     controller_static_power: float = 0.10
+
+    # 每个无源单元的调谐、移相及控制功耗，单位W。
+    passive_element_control_power: float = 0.001
+
+    # 每个有源单元除偏置和放大器之外的控制功耗，单位W。
+    active_element_control_power: float = 0.003
+
+    # 每个有源单元的固定偏置功耗，单位W。
     active_element_bias_power: float = 0.01
+
+    # STAR-RIS开关网络、馈电网络等固定功耗，单位W。
+    switching_network_static_power: float = 0.02
 
     transmission_weight: float = 0.5
     reflection_weight: float = 0.5
@@ -271,6 +284,17 @@ class RobustEnvironmentConfig:
     beta_max: float = 0.95
     robust_margin_multiplier: float = 3.0
     allow_active_bypass: bool = True
+
+    # 同一个动作在相同信道状态下进行多次动态随机评价。
+    # 每次评价的快速相位抖动、内部放大噪声和接收噪声不同。
+    robust_objective_samples: int = 4
+
+    # 使用最低alpha比例的奖励计算下尾CVaR。
+    robust_cvar_alpha: float = 0.25
+
+    # 最终鲁棒奖励中均值和CVaR的权重。
+    robust_mean_weight: float = 0.5
+    robust_cvar_weight: float = 0.5
 
     domain_randomization: DomainRandomizationConfig = field(
         default_factory=DomainRandomizationConfig
@@ -320,10 +344,27 @@ class RobustEnvironmentConfig:
             if value <= 0.0:
                 raise ValueError(f"{name} must be positive")
         nonnegative = {
-            "controller_static_power": self.controller_static_power,
-            "active_element_bias_power": self.active_element_bias_power,
-            "transmission_weight": self.transmission_weight,
-            "reflection_weight": self.reflection_weight,
+            "controller_static_power": (
+                self.controller_static_power
+            ),
+            "passive_element_control_power": (
+                self.passive_element_control_power
+            ),
+            "active_element_control_power": (
+                self.active_element_control_power
+            ),
+            "active_element_bias_power": (
+                self.active_element_bias_power
+            ),
+            "switching_network_static_power": (
+                self.switching_network_static_power
+            ),
+            "transmission_weight": (
+                self.transmission_weight
+            ),
+            "reflection_weight": (
+                self.reflection_weight
+            ),
         }
         for name, value in nonnegative.items():
             if value < 0.0:
@@ -338,6 +379,49 @@ class RobustEnvironmentConfig:
             )
         if self.robust_margin_multiplier < 0.0:
             raise ValueError("robust_margin_multiplier cannot be negative")
+        if (
+            not isinstance(
+                self.robust_objective_samples,
+                int,
+            )
+            or self.robust_objective_samples <= 0
+        ):
+            raise ValueError(
+                "robust_objective_samples must be a positive integer"
+            )
+
+        if not 0.0 < self.robust_cvar_alpha <= 1.0:
+            raise ValueError(
+                "robust_cvar_alpha must lie within (0, 1]"
+            )
+
+        robust_weights = {
+            "robust_mean_weight": (
+                self.robust_mean_weight
+            ),
+            "robust_cvar_weight": (
+                self.robust_cvar_weight
+            ),
+        }
+
+        for name, value in robust_weights.items():
+            if not np.isfinite(value):
+                raise ValueError(
+                    f"{name} must be finite"
+                )
+            if value < 0.0:
+                raise ValueError(
+                    f"{name} cannot be negative"
+                )
+
+        if (
+            self.robust_mean_weight
+            + self.robust_cvar_weight
+            <= 0.0
+        ):
+            raise ValueError(
+                "at least one robust reward weight must be positive"
+            )
         self.domain_randomization.validate()
         self.objective.validate()
 
@@ -363,8 +447,17 @@ class EnvironmentEstimates:
 @dataclass(frozen=True)
 class EnvironmentStepDiagnostics:
     projection: ActionProjectionResult
+
+    # 保存本次多重随机评价中最差奖励对应的结果，
+    # 用于保守诊断和极端性能分析。
     objective: JointObjectiveResult
+
     episode_domain: EpisodeDomain
+
+    robust_reward: float
+    mean_sample_reward: float
+    cvar_reward: float
+    num_objective_samples: int
 
 
 class RobustActiveStarRISEnv:
@@ -899,6 +992,108 @@ class RobustActiveStarRISEnv:
             "requested_active_elements": int(np.sum(self.active_mask)),
         }
 
+    def _evaluate_projection_once(
+        self,
+        projection: ActionProjectionResult,
+        g: ComplexArray,
+        h_t: ComplexArray,
+        h_r: ComplexArray,
+        d_t: ComplexArray,
+        d_r: ComplexArray,
+        domain: EpisodeDomain,
+    ) -> JointObjectiveResult:
+        """在固定信道和固定设备误差下执行一次随机性能评价。
+
+        episode级制造误差和方向非互易误差保持不变；
+        快速相位抖动、内部放大噪声及接收噪声每次重新生成。
+        """
+
+        if self._hardware_seed is None:
+            raise RuntimeError(
+                "hardware realization is unavailable; "
+                "reset must be called before evaluation"
+            )
+
+        return evaluate_joint_objective(
+            channel_controller_to_ris=g,
+            channel_ris_to_transmission_user=h_t,
+            channel_ris_to_reflection_user=h_r,
+            ideal_surface=projection.surface,
+            direct_channel_transmission=d_t,
+            direct_channel_reflection=d_r,
+
+            pilot_power_controller=(
+                self.config.controller_pilot_power
+            ),
+            pilot_power_transmission_user=(
+                self.config.transmission_user_pilot_power
+            ),
+            pilot_power_reflection_user=(
+                self.config.reflection_user_pilot_power
+            ),
+
+            ris_internal_noise_variance=(
+                domain.ris_internal_noise_variance
+            ),
+            receiver_noise_variance_controller=(
+                domain.receiver_noise_variance
+            ),
+            receiver_noise_variance_transmission_user=(
+                domain.receiver_noise_variance
+            ),
+            receiver_noise_variance_reflection_user=(
+                domain.receiver_noise_variance
+            ),
+
+            output_power_budget=(
+                domain.output_power_budget
+            ),
+            amplifier_efficiency=(
+                self.config.amplifier_efficiency
+            ),
+
+            controller_static_power=(
+                self.config.controller_static_power
+            ),
+            passive_element_control_power=(
+                self.config.passive_element_control_power
+            ),
+            active_element_control_power=(
+                self.config.active_element_control_power
+            ),
+            active_element_bias_power=(
+                self.config.active_element_bias_power
+            ),
+            switching_network_static_power=(
+                self.config.switching_network_static_power
+            ),
+
+            transmission_weight=(
+                self.config.transmission_weight
+            ),
+            reflection_weight=(
+                self.config.reflection_weight
+            ),
+
+            hardware_parameters=(
+                domain.hardware_parameters
+            ),
+
+            # 每次从同一个种子重建，用于保持制造误差和
+            # 方向非互易误差在整个episode内固定。
+            hardware_rng=np.random.default_rng(
+                self._hardware_seed
+            ),
+
+            # 环境随机流持续推进，用于生成快速相位抖动、
+            # 内部放大噪声和接收机噪声。
+            rng=self._rng,
+
+            objective_config=(
+                self.config.objective
+            ),
+        )
+
     def reset(
         self,
         *,
@@ -974,52 +1169,92 @@ class RobustActiveStarRISEnv:
 
         g, h_t, h_r, d_t, d_r = self._probing_blocks()
         domain = self.current_domain
-        objective = evaluate_joint_objective(
-            channel_controller_to_ris=g,
-            channel_ris_to_transmission_user=h_t,
-            channel_ris_to_reflection_user=h_r,
-            ideal_surface=projection.surface,
-            direct_channel_transmission=d_t,
-            direct_channel_reflection=d_r,
-            pilot_power_controller=self.config.controller_pilot_power,
-            pilot_power_transmission_user=(
-                self.config.transmission_user_pilot_power
-            ),
-            pilot_power_reflection_user=(
-                self.config.reflection_user_pilot_power
-            ),
-            ris_internal_noise_variance=(
-                domain.ris_internal_noise_variance
-            ),
-            receiver_noise_variance_controller=domain.receiver_noise_variance,
-            receiver_noise_variance_transmission_user=(
-                domain.receiver_noise_variance
-            ),
-            receiver_noise_variance_reflection_user=(
-                domain.receiver_noise_variance
-            ),
-            output_power_budget=domain.output_power_budget,
-            amplifier_efficiency=self.config.amplifier_efficiency,
-            controller_static_power=self.config.controller_static_power,
-            active_element_bias_power=self.config.active_element_bias_power,
-            transmission_weight=self.config.transmission_weight,
-            reflection_weight=self.config.reflection_weight,
-            hardware_parameters=domain.hardware_parameters,
-            hardware_rng=np.random.default_rng(
-                self._hardware_seed
-            ),
-            objective_config=self.config.objective,
-            rng=self._rng,
+        objective_samples = [
+            self._evaluate_projection_once(
+                projection=projection,
+                g=g,
+                h_t=h_t,
+                h_r=h_r,
+                d_t=d_t,
+                d_r=d_r,
+                domain=domain,
+            )
+            for _ in range(
+                self.config.robust_objective_samples
+            )
+        ]
+
+        sample_rewards = np.asarray(
+            [
+                sample.reward
+                for sample in objective_samples
+            ],
+            dtype=np.float64,
         )
+
+        mean_sample_reward = float(
+            np.mean(sample_rewards)
+        )
+
+        # CVaR使用最低奖励尾部。
+        tail_count = max(
+            1,
+            int(
+                np.ceil(
+                    self.config.robust_cvar_alpha
+                    * sample_rewards.size
+                )
+            ),
+        )
+
+        sorted_rewards = np.sort(
+            sample_rewards
+        )
+
+        cvar_reward = float(
+            np.mean(
+                sorted_rewards[:tail_count]
+            )
+        )
+
+        robust_weight_sum = float(
+            self.config.robust_mean_weight
+            + self.config.robust_cvar_weight
+        )
+
+        robust_reward = float(
+            (
+                self.config.robust_mean_weight
+                * mean_sample_reward
+                + self.config.robust_cvar_weight
+                * cvar_reward
+            )
+            / robust_weight_sum
+        )
+
+        # 选取最差随机样本作为保守诊断结果。
+        worst_sample_index = int(
+            np.argmin(sample_rewards)
+        )
+
+        objective = objective_samples[
+            worst_sample_index
+        ]
 
         self._last_diagnostics = EnvironmentStepDiagnostics(
             projection=projection,
             objective=objective,
             episode_domain=domain,
+            robust_reward=robust_reward,
+            mean_sample_reward=mean_sample_reward,
+            cvar_reward=cvar_reward,
+            num_objective_samples=len(
+                objective_samples
+            ),
         )
         self._previous_metrics = np.asarray(
             [
-                np.clip(objective.reward, -5.0, 5.0) / 5.0,
+                np.clip(robust_reward, -5.0, 5.0) / 5.0,
                 np.clip(objective.normalized_key_rate, 0.0, 5.0) / 5.0,
                 np.clip(objective.normalized_key_disagreement, 0.0, 2.0)
                 - 1.0,
@@ -1040,18 +1275,90 @@ class RobustActiveStarRISEnv:
         info = self._base_info()
         info.update(
             {
-                "reward": float(objective.reward),
+                "reward": float(
+                    robust_reward
+                ),
+                "robust_reward": float(
+                    robust_reward
+                ),
+                "mean_sample_reward": float(
+                    mean_sample_reward
+                ),
+                "cvar_reward": float(
+                    cvar_reward
+                ),
+                "worst_sample_reward": float(
+                    objective.reward
+                ),
+                "robust_objective_samples": int(
+                    len(objective_samples)
+                ),
+
+                # 保留原字段语义：bit/sample。
                 "weighted_key_rate": float(
-                    objective.key_generation.weighted_mutual_information
+                    objective.key_rate_bits_per_sample
                 ),
+                "weighted_key_rate_bits_per_sample": float(
+                    objective.key_rate_bits_per_sample
+                ),
+
+                # 明确增加bit/s形式的理论KGR。
+                "weighted_key_rate_bits_per_second": float(
+                    objective.key_rate_bits_per_second
+                ),
+
+                # 明确这是信息协调前的原始KDR。
                 "weighted_key_disagreement_rate": float(
-                    objective.key_generation.weighted_key_disagreement_rate
+                    objective.raw_key_disagreement_rate
                 ),
+                "raw_key_disagreement_rate": float(
+                    objective.raw_key_disagreement_rate
+                ),
+
                 "weighted_reciprocity": float(
-                    objective.key_generation.weighted_correlation
+                    objective.observation_reciprocity
                 ),
+                "observation_reciprocity": float(
+                    objective.observation_reciprocity
+                ),
+
                 "total_surface_power": float(
                     objective.surface_power.total_surface_power
+                ),
+                "amplifier_additional_rf_power": float(
+                    objective
+                    .surface_power
+                    .amplifier_additional_rf_power
+                ),
+                "amplifier_dc_power": float(
+                    objective
+                    .surface_power
+                    .amplifier_dc_power
+                ),
+                "controller_static_power": float(
+                    objective
+                    .surface_power
+                    .controller_static_power
+                ),
+                "passive_element_control_power": float(
+                    objective
+                    .surface_power
+                    .passive_element_control_power
+                ),
+                "active_element_control_power": float(
+                    objective
+                    .surface_power
+                    .active_element_control_power
+                ),
+                "active_element_bias_power": float(
+                    objective
+                    .surface_power
+                    .active_element_bias_power
+                ),
+                "switching_network_power": float(
+                    objective
+                    .surface_power
+                    .switching_network_power
                 ),
                 "maximum_output_power": float(
                     objective.surface_power.maximum_output_power
@@ -1075,7 +1382,13 @@ class RobustActiveStarRISEnv:
                 ),
             }
         )
-        return observation, float(objective.reward), terminated, truncated, info
+        return (
+            observation,
+            float(robust_reward),
+            terminated,
+            truncated,
+            info,
+        )
 
     def sample_action(self) -> Float32Array:
         return self.action_space.sample(self._rng)

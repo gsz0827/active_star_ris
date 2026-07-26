@@ -20,7 +20,27 @@ class BidirectionalSurfacePower:
     output_power_budget: float
     power_violation: float
 
+    # 放大器相对于单位增益状态增加的RF输出功率。
+    amplifier_additional_rf_power: float
+
+    # 根据放大效率折算的直流功耗。
     amplifier_dc_power: float
+
+    # 固定控制器功耗。
+    controller_static_power: float
+
+    # 所有无源单元的控制功耗总和。
+    passive_element_control_power: float
+
+    # 所有有源单元的控制功耗总和。
+    active_element_control_power: float
+
+    # 所有有源单元的偏置功耗总和。
+    active_element_bias_power: float
+
+    # 开关、馈电及控制网络固定功耗。
+    switching_network_power: float
+
     total_surface_power: float
 
 
@@ -116,7 +136,10 @@ def evaluate_bidirectional_surface_power(
     output_power_budget: float,
     amplifier_efficiency: float = 0.35,
     controller_static_power: float = 0.10,
+    passive_element_control_power: float = 0.0,
+    active_element_control_power: float = 0.0,
     active_element_bias_power: float = 0.01,
+    switching_network_static_power: float = 0.0,
 ) -> BidirectionalSurfacePower:
     """计算双向探测中的STAR-RIS功率。
 
@@ -165,17 +188,33 @@ def evaluate_bidirectional_surface_power(
             "must lie in (0, 1]"
         )
 
-    if controller_static_power < 0.0:
-        raise ValueError(
-            "controller_static_power "
-            "must be non-negative"
-        )
+    nonnegative_power_parameters = {
+        "controller_static_power": (
+            controller_static_power
+        ),
+        "passive_element_control_power": (
+            passive_element_control_power
+        ),
+        "active_element_control_power": (
+            active_element_control_power
+        ),
+        "active_element_bias_power": (
+            active_element_bias_power
+        ),
+        "switching_network_static_power": (
+            switching_network_static_power
+        ),
+    }
 
-    if active_element_bias_power < 0.0:
-        raise ValueError(
-            "active_element_bias_power "
-            "must be non-negative"
-        )
+    for name, value in nonnegative_power_parameters.items():
+        if not np.isfinite(value):
+            raise ValueError(
+                f"{name} must be finite"
+            )
+        if value < 0.0:
+            raise ValueError(
+                f"{name} must be non-negative"
+            )
 
     n = surface.num_elements
 
@@ -310,10 +349,31 @@ def evaluate_bidirectional_surface_power(
         np.sum(active_mask)
     )
 
-    total_surface_power = (
-        controller_static_power
-        + number_of_active_elements
+    number_of_passive_elements = int(
+        n - number_of_active_elements
+    )
+
+    passive_control_power_total = float(
+        number_of_passive_elements
+        * passive_element_control_power
+    )
+
+    active_control_power_total = float(
+        number_of_active_elements
+        * active_element_control_power
+    )
+
+    active_bias_power_total = float(
+        number_of_active_elements
         * active_element_bias_power
+    )
+
+    total_surface_power = float(
+        controller_static_power
+        + switching_network_static_power
+        + passive_control_power_total
+        + active_control_power_total
+        + active_bias_power_total
         + amplifier_dc_power
     )
 
@@ -336,8 +396,26 @@ def evaluate_bidirectional_surface_power(
         power_violation=float(
             violation
         ),
+        amplifier_additional_rf_power=float(
+            additional_rf_power
+        ),
         amplifier_dc_power=float(
             amplifier_dc_power
+        ),
+        controller_static_power=float(
+            controller_static_power
+        ),
+        passive_element_control_power=float(
+            passive_control_power_total
+        ),
+        active_element_control_power=float(
+            active_control_power_total
+        ),
+        active_element_bias_power=float(
+            active_bias_power_total
+        ),
+        switching_network_power=float(
+            switching_network_static_power
         ),
         total_surface_power=float(
             total_surface_power

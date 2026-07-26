@@ -57,7 +57,12 @@ surface_power:
 
   amplifier_efficiency: 0.35
   controller_static_power: 0.10
+
+  # 当前为工程仿真初始值，投稿前需按硬件平台统一标定。
+  passive_element_control_power: 0.001
+  active_element_control_power: 0.003
   active_element_bias_power: 0.01
+  switching_network_static_power: 0.02
 
   evaluation_nmse_db:
     - -30.0
@@ -95,6 +100,10 @@ hardware_impairments:
   directional_phase_error_std_rad: 0.03
   gain_scale_min: 0.25
   gain_scale_max: 4.0
+  fast_phase_jitter_std_rad: 0.01
+
+  transmission_amplitude_phase_coupling_rad_per_db: 0.02
+  reflection_amplitude_phase_coupling_rad_per_db: 0.02
 
 joint_objective:
   key_rate_weight: 1.0
@@ -103,7 +112,11 @@ joint_objective:
   surface_power_weight: 0.1
   constraint_violation_weight: 10.0
 
-  key_rate_reference: 10.0
+  # 每秒获得的双向信道观测数。
+  probe_sample_rate_hz: 1000.0
+
+  # 单位分别为bit/s、无量纲、W。
+  key_rate_reference: 10000.0
   key_disagreement_reference: 0.5
   surface_power_reference: 1.0
 
@@ -137,6 +150,15 @@ rl_environment:
   include_previous_metrics: true
   state_clip: 5.0
 
+  # 每个动作执行4次动态噪声和快速相位抖动采样。
+  robust_objective_samples: 4
+
+  # 使用最低25%奖励计算下尾CVaR。
+  robust_cvar_alpha: 0.25
+
+  robust_mean_weight: 0.5
+  robust_cvar_weight: 0.5
+
   domain_randomization:
     nmse_db_min: -25.0
     nmse_db_max: -10.0
@@ -156,6 +178,15 @@ rl_environment:
     static_phase_error_std_rad_max: 0.08
     directional_phase_error_std_rad_min: 0.01
     directional_phase_error_std_rad_max: 0.05
+
+    fast_phase_jitter_std_rad_min: 0.005
+    fast_phase_jitter_std_rad_max: 0.020
+
+    transmission_amplitude_phase_coupling_rad_per_db_min: 0.0
+    transmission_amplitude_phase_coupling_rad_per_db_max: 0.03
+
+    reflection_amplitude_phase_coupling_rad_per_db_min: 0.0
+    reflection_amplitude_phase_coupling_rad_per_db_max: 0.03    
 
 # 第四步新增：PyTorch TD3智能体与训练循环。
 td3:

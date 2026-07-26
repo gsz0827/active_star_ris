@@ -240,3 +240,77 @@ def test_hardware_mismatch_is_fixed_within_episode():
         first.static_gain_scale,
         third.static_gain_scale,
     )
+
+
+def test_robust_reward_uses_lower_tail_cvar():
+    config = RobustEnvironmentConfig(
+        num_elements=6,
+        num_active_elements=2,
+        max_episode_steps=2,
+        probing_samples_per_step=24,
+        robust_objective_samples=4,
+        robust_cvar_alpha=0.50,
+        robust_mean_weight=0.0,
+        robust_cvar_weight=1.0,
+    )
+
+    env = RobustActiveStarRISEnv(
+        config,
+        seed=321,
+    )
+
+    env.reset()
+
+    action = np.zeros(
+        env.action_dim,
+        dtype=np.float32,
+    )
+
+    _, reward, _, _, info = env.step(
+        action
+    )
+
+    assert np.isfinite(reward)
+
+    assert np.isclose(
+        reward,
+        info["reward"],
+    )
+
+    assert np.isclose(
+        reward,
+        info["robust_reward"],
+    )
+
+    # 本测试将CVaR权重设为1，因此最终奖励应等于CVaR。
+    assert np.isclose(
+        reward,
+        info["cvar_reward"],
+    )
+
+    # 下尾CVaR不应高于全部样本平均值。
+    assert (
+        info["cvar_reward"]
+        <= info["mean_sample_reward"]
+        + 1.0e-12
+    )
+
+    assert (
+        info["worst_sample_reward"]
+        <= info["cvar_reward"]
+        + 1.0e-12
+    )
+
+    assert (
+        info["robust_objective_samples"]
+        == 4
+    )
+
+    assert env.last_diagnostics is not None
+
+    assert (
+        env
+        .last_diagnostics
+        .num_objective_samples
+        == 4
+    )

@@ -28,7 +28,12 @@ ComplexArray = NDArray[np.complex128]
 
 @dataclass(frozen=True)
 class JointObjectiveConfig:
-    """联合密钥生成目标的权重与归一化参数。"""
+    """联合密钥生成目标的权重与归一化参数。
+
+    key_rate_reference的单位为bit/s。
+    key_disagreement_reference为无量纲KDR参考值。
+    surface_power_reference的单位为W。
+    """
 
     key_rate_weight: float = 1.0
     key_disagreement_weight: float = 1.0
@@ -36,8 +41,17 @@ class JointObjectiveConfig:
     surface_power_weight: float = 0.1
     constraint_violation_weight: float = 10.0
 
-    key_rate_reference: float = 10.0
+    # 每秒获得的双向信道观测样本数。
+    # 1000.0只是当前仿真占位值，后续应根据实际导频周期设定。
+    probe_sample_rate_hz: float = 1000.0
+
+    # KGR归一化参考值，单位bit/s。
+    key_rate_reference: float = 10_000.0
+
+    # 当前KDR是信息协调前的原始密钥不一致率。
     key_disagreement_reference: float = 0.5
+
+    # 表面总功耗归一化参考值，单位W。
     surface_power_reference: float = 1.0
 
     def validate(self) -> None:
@@ -46,27 +60,62 @@ class JointObjectiveConfig:
             "key_disagreement_weight": self.key_disagreement_weight,
             "reciprocity_weight": self.reciprocity_weight,
             "surface_power_weight": self.surface_power_weight,
-            "constraint_violation_weight": self.constraint_violation_weight,
+            "constraint_violation_weight": (
+                self.constraint_violation_weight
+            ),
         }
+
         for name, value in weights.items():
+            if not np.isfinite(value):
+                raise ValueError(
+                    f"{name} must be finite"
+                )
             if value < 0.0:
-                raise ValueError(f"{name} cannot be negative")
+                raise ValueError(
+                    f"{name} cannot be negative"
+                )
 
-        references = {
-            "key_rate_reference": self.key_rate_reference,
-            "key_disagreement_reference": self.key_disagreement_reference,
-            "surface_power_reference": self.surface_power_reference,
+        positive_parameters = {
+            "probe_sample_rate_hz": (
+                self.probe_sample_rate_hz
+            ),
+            "key_rate_reference": (
+                self.key_rate_reference
+            ),
+            "key_disagreement_reference": (
+                self.key_disagreement_reference
+            ),
+            "surface_power_reference": (
+                self.surface_power_reference
+            ),
         }
-        for name, value in references.items():
-            if value <= 0.0:
-                raise ValueError(f"{name} must be positive")
 
+        for name, value in positive_parameters.items():
+            if not np.isfinite(value):
+                raise ValueError(
+                    f"{name} must be finite"
+                )
+            if value <= 0.0:
+                raise ValueError(
+                    f"{name} must be positive"
+                )
+            
 
 @dataclass(frozen=True)
 class JointObjectiveResult:
     """一次联合性能评价的完整结果。"""
 
     reward: float
+
+    # 理论高斯互信息密钥率。
+    key_rate_bits_per_sample: float
+    key_rate_bits_per_second: float
+
+    # 信息协调前的原始量化密钥不一致率。
+    raw_key_disagreement_rate: float
+
+    # 双向观测相关系数幅值。
+    observation_reciprocity: float
 
     normalized_key_rate: float
     normalized_key_disagreement: float
@@ -217,7 +266,18 @@ def evaluate_joint_objective(
     output_power_budget: float = 1.0,
     amplifier_efficiency: float = 0.35,
     controller_static_power: float = 0.10,
+
+    # 每个无源单元的调谐、移相及控制功耗。
+    passive_element_control_power: float = 0.0,
+
+    # 每个有源单元除放大器和偏置外的控制功耗。
+    active_element_control_power: float = 0.0,
+
+    # 每个有源单元的偏置功耗。
     active_element_bias_power: float = 0.01,
+
+    # STAR-RIS开关网络、馈电网络等固定功耗。
+    switching_network_static_power: float = 0.0,
     transmission_weight: float = 0.5,
     reflection_weight: float = 0.5,
     hardware_parameters: HardwareMismatchParameters | None = None,
@@ -358,21 +418,53 @@ def evaluate_joint_objective(
         output_power_budget=output_power_budget,
         amplifier_efficiency=amplifier_efficiency,
         controller_static_power=controller_static_power,
+        passive_element_control_power=(
+            passive_element_control_power
+        ),
+        active_element_control_power=(
+            active_element_control_power
+        ),
         active_element_bias_power=(
             active_element_bias_power
         ),
+        switching_network_static_power=(
+            switching_network_static_power
+        ),
+    )
+
+    # 理论KGR：高斯互信息，单位bit/sample。
+    key_rate_bits_per_sample = float(
+        key_result.weighted_mutual_information
+    )
+
+    # 根据双向探测样本率换算为bit/s。
+    key_rate_bits_per_second = float(
+        key_rate_bits_per_sample
+        * config.probe_sample_rate_hz
+    )
+
+    # 该KDR是信息协调前的原始量化KDR。
+    raw_key_disagreement_rate = float(
+        key_result.weighted_key_disagreement_rate
+    )
+
+    # 观测互易性使用双向观测复相关系数的加权幅值。
+    observation_reciprocity = float(
+        key_result.weighted_correlation
     )
 
     normalized_key_rate = (
-        key_result.weighted_mutual_information
+        key_rate_bits_per_second
         / config.key_rate_reference
     )
+
     normalized_kdr = (
-        key_result.weighted_key_disagreement_rate
+        raw_key_disagreement_rate
         / config.key_disagreement_reference
     )
+
     normalized_reciprocity = (
-        key_result.weighted_correlation
+        observation_reciprocity
     )
     normalized_surface_power = (
         power_result.total_surface_power
@@ -398,6 +490,18 @@ def evaluate_joint_objective(
 
     return JointObjectiveResult(
         reward=float(reward),
+        key_rate_bits_per_sample=float(
+            key_rate_bits_per_sample
+        ),
+        key_rate_bits_per_second=float(
+            key_rate_bits_per_second
+        ),
+        raw_key_disagreement_rate=float(
+            raw_key_disagreement_rate
+        ),
+        observation_reciprocity=float(
+            observation_reciprocity
+        ),
         normalized_key_rate=float(
             normalized_key_rate
         ),
