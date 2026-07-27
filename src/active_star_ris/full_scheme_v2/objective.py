@@ -125,6 +125,23 @@ def evaluate_objective(
         weight_t * transmission_key.final_key_rate_bps
         + weight_r * reflection_key.final_key_rate_bps
     )
+
+    joint_frame_duration = max(
+        transmission_key.frame_duration_seconds
+        + reflection_key.frame_duration_seconds,
+        1.0e-12,
+    )
+
+    system_training_rate = (
+        transmission_key.training_secret_bits
+        + reflection_key.training_secret_bits
+    ) / joint_frame_duration
+
+    system_final_rate = (
+        transmission_key.final_key_bits
+        + reflection_key.final_key_bits
+    ) / joint_frame_duration
+
     raw_kdr = (
         weight_t * transmission_key.raw_kdr
         + weight_r * reflection_key.raw_kdr
@@ -262,4 +279,6 @@ def evaluate_objective(
         reflection_key=reflection_key,
         power=power_result,
         probing=probing,
+        system_training_key_rate_bps=float(system_training_rate),
+        system_final_key_rate_bps=float(system_final_rate),
     )

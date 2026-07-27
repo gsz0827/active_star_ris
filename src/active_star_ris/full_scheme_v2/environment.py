@@ -11,7 +11,7 @@ from .channels import (
     evolve_snapshot,
     sample_channel_snapshot,
 )
-from .config import EnvironmentConfig
+from .config import EnvironmentConfig, HardwareConfig
 from .hardware import (
     action_dimension,
     build_active_mask,
@@ -28,6 +28,7 @@ class EpisodeDomain:
     control_csi_nmse_db: float
     amplifier_noise_scale: float
     receiver_noise_scale: float
+    hardware_error_scale: float
     rf_budget: float
     dc_budget: float
 
@@ -74,6 +75,8 @@ class RobustFullSchemeEnvironment:
         self._step_index = 0
         self._last_metrics = np.zeros(7, dtype=np.float64)
 
+        self._episode_hardware_config: HardwareConfig | None = None
+
     def _calculate_state_dimension(self) -> int:
         n = self.config.channel.num_elements
         # g, h_T, h_R: each real+imag => 6N; two direct links => 4.
@@ -110,6 +113,12 @@ class RobustFullSchemeEnvironment:
                     robust.receiver_noise_scale_max,
                 )
             ),
+            hardware_error_scale=float(
+                self._rng.uniform(
+                    robust.hardware_error_scale_min,
+                    robust.hardware_error_scale_max,
+                )
+            ),            
             rf_budget=float(
                 self.config.power.maximum_rf_output_power
                 * self._rng.uniform(
@@ -198,6 +207,42 @@ class RobustFullSchemeEnvironment:
 
         return float(
             np.clip(value, -6.0, 6.0) / 6.0
+        )
+
+    @staticmethod
+    def _scaled_hardware_config(
+        base: HardwareConfig,
+        scale: float,
+    ) -> HardwareConfig:
+        if scale < 0.0:
+            raise ValueError("hardware scale cannot be negative")
+
+        return replace(
+            base,
+            static_gain_error_std_db=(
+                base.static_gain_error_std_db * scale
+            ),
+            directional_gain_error_std_db=(
+                base.directional_gain_error_std_db * scale
+            ),
+            static_phase_error_std_rad=(
+                base.static_phase_error_std_rad * scale
+            ),
+            directional_phase_error_std_rad=(
+                base.directional_phase_error_std_rad * scale
+            ),
+            fast_phase_jitter_std_rad=(
+                base.fast_phase_jitter_std_rad * scale
+            ),
+            transmission_split_error_std=(
+                base.transmission_split_error_std * scale
+            ),
+            endpoint_gain_error_std_db=(
+                base.endpoint_gain_error_std_db * scale
+            ),
+            endpoint_phase_error_std_rad=(
+                base.endpoint_phase_error_std_rad * scale
+            ),
         )
 
     def _build_state(self) -> np.ndarray:
@@ -302,9 +347,14 @@ class RobustFullSchemeEnvironment:
             self._snapshot,
             self._domain.control_csi_nmse_db,
         )
+        self._episode_hardware_config = self._scaled_hardware_config(
+            self.config.hardware,
+            self._domain.hardware_error_scale,
+        )
+
         self._hardware = sample_static_hardware(
             self.config.channel.num_elements,
-            self.config.hardware,
+            self._episode_hardware_config,
             self._rng,
         )
         self._step_index = 0
@@ -341,6 +391,14 @@ class RobustFullSchemeEnvironment:
         self,
         action: np.ndarray,
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        if self._episode_hardware_config is None:
+            raise RuntimeError("episode hardware config is missing")
+
+        episode_config = replace(
+            self.config,
+            hardware=self._episode_hardware_config,
+        )
+
         snapshot, estimate, hardware, domain = self._require_initialized()
 
         command = decode_action(action, self.active_mask, self.config.hardware)
@@ -351,6 +409,7 @@ class RobustFullSchemeEnvironment:
             nmse_db=domain.control_csi_nmse_db,
             probing=self.config.probing,
             power=self.config.power,
+            amplifier_noise_scale=domain.amplifier_noise_scale,
         )
         projected_command, projected_power = project_command_to_power_constraints(
             command,
@@ -358,7 +417,7 @@ class RobustFullSchemeEnvironment:
             input_t,
             input_r,
             power_config=self.config.power,
-            hardware_config=self.config.hardware,
+            hardware_config=self._episode_hardware_config,
             rf_budget=domain.rf_budget,
             dc_budget=domain.dc_budget,
         )
@@ -375,9 +434,11 @@ class RobustFullSchemeEnvironment:
                 block,
                 projected_command,
                 hardware,
-                self.config,
+                episode_config,
                 self._rng,
-                full_protocol=(self.config.objective.key_rate_mode == "final_key"),
+                full_protocol=(
+                    episode_config.objective.key_rate_mode == "final_key"
+                ),
                 amplifier_noise_scale=domain.amplifier_noise_scale,
                 receiver_noise_scale=domain.receiver_noise_scale,
                 rf_budget=domain.rf_budget,
@@ -407,7 +468,7 @@ class RobustFullSchemeEnvironment:
             / robust_weight_sum
         )
 
-        def average(attribute: str) -> float:
+        def average(attribute: str) -> f代码优化与实验建议.htmlloat:
             return float(
                 np.mean([getattr(sample, attribute) for sample in objective_samples])
             )

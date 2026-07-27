@@ -126,12 +126,19 @@ robust:
 
   nmse_db_min: -20.0
   nmse_db_max: -10.0
+
   amplifier_noise_scale_min: 0.5
   amplifier_noise_scale_max: 2.0
+
   receiver_noise_scale_min: 0.5
   receiver_noise_scale_max: 2.0
+
+  hardware_error_scale_min: 0.5
+  hardware_error_scale_max: 2.0
+
   rf_budget_scale_min: 0.80
   rf_budget_scale_max: 1.20
+
   dc_budget_scale_min: 0.80
   dc_budget_scale_max: 1.20
 

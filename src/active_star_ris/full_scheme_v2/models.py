@@ -168,3 +168,6 @@ class ObjectiveResult:
     reflection_key: KeyRateResult
     power: PowerResult
     probing: DualProbingResult
+
+    system_training_key_rate_bps: float
+    system_final_key_rate_bps: float

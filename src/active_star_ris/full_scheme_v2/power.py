@@ -31,7 +31,10 @@ def conservative_input_powers(
     nmse_db: float,
     probing: ProbingConfig,
     power: PowerConfig,
+    amplifier_noise_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if amplifier_noise_scale < 0.0:
+        raise ValueError("amplifier_noise_scale cannot be negative")
     nmse_linear = 10.0 ** (nmse_db / 10.0)
 
     def robust_power(
@@ -58,10 +61,11 @@ def conservative_input_powers(
             + power.csi_power_margin_std * error_std
         )
 
-        return (
-            pilot_power * upper_magnitude**2
-            + probing.input_referred_amplifier_noise_variance
-        )
+    return (
+        pilot_power * upper_magnitude**2
+        + probing.input_referred_amplifier_noise_variance
+        * amplifier_noise_scale
+    )
 
     return (
         robust_power(

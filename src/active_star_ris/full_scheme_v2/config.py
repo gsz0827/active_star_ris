@@ -342,6 +342,9 @@ class RobustConfig:
     include_known_system_context: bool = True
     include_oracle_impairment_context: bool = False
 
+    hardware_error_scale_min: float = 0.5
+    hardware_error_scale_max: float = 2.0
+
     def validate(self) -> None:
         if self.objective_samples < 1:
             raise ValueError("objective_samples must be positive")
@@ -369,6 +372,7 @@ class RobustConfig:
             ("receiver_noise_scale_min", "receiver_noise_scale_max"),
             ("rf_budget_scale_min", "rf_budget_scale_max"),
             ("dc_budget_scale_min", "dc_budget_scale_max"),
+            ("hardware_error_scale_min", "hardware_error_scale_max"),
         ):
             if getattr(self, low_name) > getattr(self, high_name):
                 raise ValueError(f"{low_name} cannot exceed {high_name}")
