@@ -92,7 +92,8 @@ class RobustFullSchemeEnvironment:
         if self.config.robust.include_known_system_context:
             dimension += 2  # normalized RF and DC budgets.
         if self.config.robust.include_oracle_impairment_context:
-            dimension += 3  # NMSE, amplifier-noise scale, receiver-noise scale.
+            # NMSE、放大噪声、接收噪声、硬件误差强度
+            dimension += 4
         return dimension
 
     def _sample_domain(self) -> EpisodeDomain:
@@ -315,12 +316,42 @@ class RobustFullSchemeEnvironment:
             )
 
         if self.config.robust.include_oracle_impairment_context:
+            hardware_scale_min = (
+                self.config.robust.hardware_error_scale_min
+            )
+            hardware_scale_max = (
+                self.config.robust.hardware_error_scale_max
+            )
+
+            hardware_scale_center = 0.5 * (
+                hardware_scale_min + hardware_scale_max
+            )
+
+            hardware_scale_half_range = max(
+                0.5 * (
+                    hardware_scale_max
+                    - hardware_scale_min
+                ),
+                1.0e-12,
+            )
+
+            normalized_hardware_scale = np.clip(
+                (
+                    self._domain.hardware_error_scale
+                    - hardware_scale_center
+                )
+                / hardware_scale_half_range,
+                -1.0,
+                1.0,
+            )
+
             components.append(
                 np.asarray(
                     [
                         self._domain.control_csi_nmse_db / 30.0,
                         self._domain.amplifier_noise_scale,
                         self._domain.receiver_noise_scale,
+                        normalized_hardware_scale,
                     ],
                     dtype=np.float64,
                 )
@@ -468,13 +499,25 @@ class RobustFullSchemeEnvironment:
             / robust_weight_sum
         )
 
-        def average(attribute: str) -> f代码优化与实验建议.htmlloat:
+        def average(attribute: str) -> float:
             return float(
                 np.mean([getattr(sample, attribute) for sample in objective_samples])
             )
 
-        mean_training_rate = average("training_key_rate_bps")
-        mean_final_rate = average("final_key_rate_bps")
+        mean_training_rate = average(
+            "training_key_rate_bps"
+        )
+        mean_final_rate = average(
+            "final_key_rate_bps"
+        )
+
+        mean_system_training_rate = average(
+            "system_training_key_rate_bps"
+        )
+        mean_system_final_rate = average(
+            "system_final_key_rate_bps"
+        )
+
         mean_raw_kdr = average("raw_kdr")
         mean_post_kdr = average("post_reconciliation_kdr")
         mean_reciprocity = average("reciprocity")
@@ -516,12 +559,32 @@ class RobustFullSchemeEnvironment:
             "tail_count": tail_count,
             "training_key_rate_bps": mean_training_rate,
             "final_key_rate_bps": mean_final_rate,
+            "system_training_key_rate_bps": (
+                mean_system_training_rate
+            ),
+            "system_final_key_rate_bps": (
+                mean_system_final_rate
+            ),
             "raw_kdr": mean_raw_kdr,
             "post_reconciliation_kdr": mean_post_kdr,
             "reciprocity": mean_reciprocity,
             "surface_dc_power": mean_power,
             "feasibility_rate": feasibility_rate,
             "projection_fully_feasible": projected_power.fully_feasible,
+            "requested_active_elements": int(
+                np.count_nonzero(command.active_mask)
+            ),
+            "remaining_active_elements": int(
+                np.count_nonzero(
+                    projected_command.active_mask
+                )
+            ),
+            "bypassed_active_elements": int(
+                np.count_nonzero(
+                    command.active_mask
+                    & ~projected_command.active_mask
+                )
+            ),
             "projected_gain": projected_command.gain.copy(),
             "domain": domain,
         }

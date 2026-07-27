@@ -212,79 +212,157 @@ def apply_hardware(
         if array.size != n:
             raise ValueError("hardware realization size mismatch")
 
-    active = command.active_mask
-    command_gain_db = 20.0 * np.log10(np.maximum(command.gain, 1.0))
-
-    gain_forward = command.gain * 10.0 ** (
-        (static.gain_error_common_db + static.gain_error_forward_db) / 20.0
-    )
-    gain_reverse = command.gain * 10.0 ** (
-        (static.gain_error_common_db + static.gain_error_reverse_db) / 20.0
+    active = np.asarray(
+        command.active_mask,
+        dtype=bool,
     )
 
-    gain_forward = np.where(active, gain_forward, 1.0)
-    gain_reverse = np.where(active, gain_reverse, 1.0)
-    gain_forward = quantize_gain_downward(
-        gain_forward,
+    # 1. 先量化数字控制命令
+    command_gain = quantize_gain_downward(
+        command.gain,
         config.maximum_active_gain,
         config.gain_quantization_bits,
     )
-    gain_reverse = quantize_gain_downward(
-        gain_reverse,
-        config.maximum_active_gain,
-        config.gain_quantization_bits,
+    command_gain = np.where(
+        active,
+        command_gain,
+        1.0,
     )
-    gain_forward[~active] = 1.0
-    gain_reverse[~active] = 1.0
 
-    beta_t = np.clip(command.beta_transmission + static.beta_error, 0.0, 1.0)
+    command_phase_t = quantize_phase(
+        command.phase_transmission,
+        config.phase_quantization_bits,
+    )
+    command_phase_r = quantize_phase(
+        command.phase_reflection,
+        config.phase_quantization_bits,
+    )
+
+    # 2. 模拟硬件在量化命令的基础上产生增益误差
+    gain_forward = command_gain * 10.0 ** (
+        (
+            static.gain_error_common_db
+            + static.gain_error_forward_db
+        )
+        / 20.0
+    )
+
+    gain_reverse = command_gain * 10.0 ** (
+        (
+            static.gain_error_common_db
+            + static.gain_error_reverse_db
+        )
+        / 20.0
+    )
+
+    gain_forward = np.where(
+        active,
+        np.clip(
+            gain_forward,
+            1.0,
+            config.maximum_active_gain,
+        ),
+        1.0,
+    )
+
+    gain_reverse = np.where(
+        active,
+        np.clip(
+            gain_reverse,
+            1.0,
+            config.maximum_active_gain,
+        ),
+        1.0,
+    )
+
+    beta_t = np.clip(
+        command.beta_transmission + static.beta_error,
+        0.0,
+        1.0,
+    )
     beta_r = 1.0 - beta_t
 
-    jitter_t_forward = rng.normal(0.0, config.fast_phase_jitter_std_rad, size=n)
-    jitter_r_forward = rng.normal(0.0, config.fast_phase_jitter_std_rad, size=n)
-    jitter_t_reverse = rng.normal(0.0, config.fast_phase_jitter_std_rad, size=n)
-    jitter_r_reverse = rng.normal(0.0, config.fast_phase_jitter_std_rad, size=n)
+    jitter_t_forward = rng.normal(
+        0.0,
+        config.fast_phase_jitter_std_rad,
+        size=n,
+    )
+    jitter_r_forward = rng.normal(
+        0.0,
+        config.fast_phase_jitter_std_rad,
+        size=n,
+    )
+    jitter_t_reverse = rng.normal(
+        0.0,
+        config.fast_phase_jitter_std_rad,
+        size=n,
+    )
+    jitter_r_reverse = rng.normal(
+        0.0,
+        config.fast_phase_jitter_std_rad,
+        size=n,
+    )
 
-    coupling_t = (
+    # 使用实际方向增益计算幅相耦合
+    gain_forward_db = 20.0 * np.log10(
+        np.maximum(gain_forward, 1.0)
+    )
+    gain_reverse_db = 20.0 * np.log10(
+        np.maximum(gain_reverse, 1.0)
+    )
+
+    coupling_t_forward = (
         config.transmission_amplitude_phase_coupling_rad_per_db
-        * command_gain_db
+        * gain_forward_db
     )
-    coupling_r = (
+    coupling_t_reverse = (
+        config.transmission_amplitude_phase_coupling_rad_per_db
+        * gain_reverse_db
+    )
+    coupling_r_forward = (
         config.reflection_amplitude_phase_coupling_rad_per_db
-        * command_gain_db
+        * gain_forward_db
+    )
+    coupling_r_reverse = (
+        config.reflection_amplitude_phase_coupling_rad_per_db
+        * gain_reverse_db
     )
 
-    phase_t_forward = quantize_phase(
-        command.phase_transmission
+    # 3. 量化后不再二次量化，直接加入模拟硬件误差
+    phase_t_forward = np.mod(
+        command_phase_t
         + static.phase_error_transmission_common
         + static.phase_error_forward
-        + coupling_t
+        + coupling_t_forward
         + jitter_t_forward,
-        config.phase_quantization_bits,
+        2.0 * np.pi,
     )
-    phase_r_forward = quantize_phase(
-        command.phase_reflection
+
+    phase_r_forward = np.mod(
+        command_phase_r
         + static.phase_error_reflection_common
         + static.phase_error_forward
-        + coupling_r
+        + coupling_r_forward
         + jitter_r_forward,
-        config.phase_quantization_bits,
+        2.0 * np.pi,
     )
-    phase_t_reverse = quantize_phase(
-        command.phase_transmission
+
+    phase_t_reverse = np.mod(
+        command_phase_t
         + static.phase_error_transmission_common
         + static.phase_error_reverse
-        + coupling_t
+        + coupling_t_reverse
         + jitter_t_reverse,
-        config.phase_quantization_bits,
+        2.0 * np.pi,
     )
-    phase_r_reverse = quantize_phase(
-        command.phase_reflection
+
+    phase_r_reverse = np.mod(
+        command_phase_r
         + static.phase_error_reflection_common
         + static.phase_error_reverse
-        + coupling_r
+        + coupling_r_reverse
         + jitter_r_reverse,
-        config.phase_quantization_bits,
+        2.0 * np.pi,
     )
 
     transmission_forward = (

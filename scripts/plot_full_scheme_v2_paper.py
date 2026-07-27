@@ -167,6 +167,12 @@ def plot_convergence(results_root: Path, output_dir: Path) -> None:
             "convergence_final_kgr",
             True,
         ),
+        (
+            "evaluation_system_final_key_rates_bps",
+            "System final key rate (bit/s)",
+            "convergence_system_final_kgr",
+            True,
+        ),
         ("evaluation_raw_kdr", "Raw KDR", "convergence_raw_kdr", False),
         ("evaluation_reciprocity", "Observation reciprocity", "convergence_reciprocity", False),
         ("evaluation_surface_power", "Surface DC power (W)", "convergence_power", False),

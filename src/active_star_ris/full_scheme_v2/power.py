@@ -34,7 +34,10 @@ def conservative_input_powers(
     amplifier_noise_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if amplifier_noise_scale < 0.0:
-        raise ValueError("amplifier_noise_scale cannot be negative")
+        raise ValueError(
+            "amplifier_noise_scale cannot be negative"
+        )
+
     nmse_linear = 10.0 ** (nmse_db / 10.0)
 
     def robust_power(
@@ -45,8 +48,6 @@ def conservative_input_powers(
             np.asarray(values, dtype=np.complex128)
         )
 
-        # 与 channels.estimate_channel() 中的 NMSE 定义保持一致：
-        # sigma_e^2 = P_h * NMSE
         link_power = max(
             float(np.mean(magnitude**2)),
             1.0e-12,
@@ -61,11 +62,11 @@ def conservative_input_powers(
             + power.csi_power_margin_std * error_std
         )
 
-    return (
-        pilot_power * upper_magnitude**2
-        + probing.input_referred_amplifier_noise_variance
-        * amplifier_noise_scale
-    )
+        return (
+            pilot_power * upper_magnitude**2
+            + probing.input_referred_amplifier_noise_variance
+            * amplifier_noise_scale
+        )
 
     return (
         robust_power(
@@ -217,23 +218,29 @@ def project_command_to_power_constraints(
     rf_budget: float | None = None,
     dc_budget: float | None = None,
 ) -> tuple[IdealSurfaceCommand, PowerResult]:
-    """在最坏硬件增益失配下，对实际下发的增益命令进行鲁棒功率投影。
+    """将增益命令投影到鲁棒功率约束可行域。
 
-    注意：
-    1. requested_gain 是控制器真正想下发的增益；
-    2. worst_case_gain 只用于检查最坏情况下是否满足功率约束；
-    3. 最终不能把 worst_case_gain 直接下发给 STAR-RIS。
+    若有源单元在单位增益下仍不可行，则将本次命令中的
+    有源单元切换到无源 bypass。
     """
 
-    active = np.asarray(command.active_mask, dtype=bool).reshape(-1)
-    requested_gain = np.asarray(command.gain, dtype=np.float64).reshape(-1)
+    original_active = np.asarray(
+        command.active_mask,
+        dtype=bool,
+    ).reshape(-1)
 
-    if requested_gain.size != active.size:
-        raise ValueError("gain and active_mask size mismatch")
+    requested_gain = np.asarray(
+        command.gain,
+        dtype=np.float64,
+    ).reshape(-1)
 
-    # 真正准备下发给硬件的增益命令。
+    if requested_gain.size != original_active.size:
+        raise ValueError(
+            "gain and active_mask size mismatch"
+        )
+
     requested_gain = np.where(
-        active,
+        original_active,
         np.clip(
             requested_gain,
             1.0,
@@ -242,34 +249,75 @@ def project_command_to_power_constraints(
         1.0,
     )
 
-    # 正向硬件增益失配的保守裕量。
     mismatch_margin = 10.0 ** (
-        power_config.hardware_gain_margin_db / 20.0
+        power_config.hardware_gain_margin_db
+        / 20.0
     )
 
-    def make_candidate(gain: np.ndarray) -> IdealSurfaceCommand:
-        return replace(
-            command,
-            gain=np.asarray(gain, dtype=np.float64),
+    def make_candidate(
+        gain: np.ndarray,
+        active_mask: np.ndarray,
+    ) -> IdealSurfaceCommand:
+        candidate_mask = np.asarray(
+            active_mask,
+            dtype=bool,
+        ).reshape(-1)
+
+        candidate_gain = np.asarray(
+            gain,
+            dtype=np.float64,
+        ).reshape(-1)
+
+        candidate_gain = np.where(
+            candidate_mask,
+            candidate_gain,
+            1.0,
         )
 
-    def worst_case_gain(command_gain: np.ndarray) -> np.ndarray:
-        """把控制增益映射为功率检查使用的最坏实际增益。"""
-        gain = np.ones_like(command_gain, dtype=np.float64)
+        return replace(
+            command,
+            gain=candidate_gain,
+            active_mask=candidate_mask,
+        )
 
-        gain[active] = np.minimum(
-            command_gain[active] * mismatch_margin,
+    def worst_case_gain(
+        command_gain: np.ndarray,
+        active_mask: np.ndarray,
+    ) -> np.ndarray:
+        candidate_mask = np.asarray(
+            active_mask,
+            dtype=bool,
+        ).reshape(-1)
+
+        gain = np.ones_like(
+            command_gain,
+            dtype=np.float64,
+        )
+
+        gain[candidate_mask] = np.minimum(
+            command_gain[candidate_mask]
+            * mismatch_margin,
             hardware_config.maximum_active_gain,
         )
 
         return gain
 
-    def robust_result_for(command_gain: np.ndarray) -> PowerResult:
-        """按最坏实际增益检查 RF/DC/单元饱和约束。"""
-        conservative_gain = worst_case_gain(command_gain)
+    def robust_result_for(
+        command_gain: np.ndarray,
+        active_mask: np.ndarray,
+    ) -> PowerResult:
+        conservative_gain = worst_case_gain(
+            command_gain,
+            active_mask,
+        )
+
+        conservative_command = make_candidate(
+            conservative_gain,
+            active_mask,
+        )
 
         return evaluate_power(
-            make_candidate(conservative_gain),
+            conservative_command,
             input_power_controller,
             input_power_transmission,
             input_power_reflection,
@@ -279,53 +327,102 @@ def project_command_to_power_constraints(
             dc_budget=dc_budget,
         )
 
-    passive_gain = np.ones_like(requested_gain, dtype=np.float64)
+    passive_gain = np.ones_like(
+        requested_gain,
+        dtype=np.float64,
+    )
 
-    # 请求的控制增益在最坏硬件失配下仍然可行。
-    if robust_result_for(requested_gain).fully_feasible:
+    requested_result = robust_result_for(
+        requested_gain,
+        original_active,
+    )
+
+    # 情况 1：请求增益已经可行
+    if requested_result.fully_feasible:
         projected_gain = requested_gain.copy()
-
-    # 连单位增益在当前预算下都不可行，则只能退化到单位增益。
-    elif not robust_result_for(passive_gain).fully_feasible:
-        projected_gain = passive_gain
+        projected_mask = original_active.copy()
 
     else:
-        # 在 gain=1 与 requested_gain 之间做二分投影。
+        unit_active_result = robust_result_for(
+            passive_gain,
+            original_active,
+        )
+
+        # 情况 2：有源单元保持 active、增益为 1 仍不可行
+        # 将全部有源单元切换为无源 bypass
+        if not unit_active_result.fully_feasible:
+            projected_mask = np.zeros_like(
+                original_active,
+                dtype=bool,
+            )
+            projected_gain = passive_gain
+
+            bypass_result = robust_result_for(
+                projected_gain,
+                projected_mask,
+            )
+
+            bypass_command = make_candidate(
+                projected_gain,
+                projected_mask,
+            )
+
+            return bypass_command, bypass_result
+
+        # 情况 3：单位增益可行，在 1 和请求增益之间二分
+        projected_mask = original_active.copy()
         lower = 0.0
         upper = 1.0
 
-        for _ in range(power_config.projection_iterations):
-            middle = 0.5 * (lower + upper)
+        for _ in range(
+            power_config.projection_iterations
+        ):
+            middle = 0.5 * (
+                lower + upper
+            )
 
             candidate_gain = _scale_active_gain(
                 requested_gain,
-                active,
+                projected_mask,
                 middle,
             )
 
-            if robust_result_for(candidate_gain).fully_feasible:
+            candidate_result = robust_result_for(
+                candidate_gain,
+                projected_mask,
+            )
+
+            if candidate_result.fully_feasible:
                 lower = middle
             else:
                 upper = middle
 
         projected_gain = _scale_active_gain(
             requested_gain,
-            active,
+            projected_mask,
             lower,
         )
 
-    # 向下量化，避免量化后重新违反功率约束。
+    # 向下量化，防止量化后超出约束
     projected_gain = quantize_gain_downward(
         projected_gain,
         hardware_config.maximum_active_gain,
         hardware_config.gain_quantization_bits,
     )
 
-    projected_gain[~active] = 1.0
+    projected_gain[~projected_mask] = 1.0
 
-    projected = make_candidate(projected_gain)
+    projected_command = make_candidate(
+        projected_gain,
+        projected_mask,
+    )
 
-    # 返回的是“这个控制命令在最坏硬件失配下”的功率检查结果。
-    conservative_result = robust_result_for(projected_gain)
+    conservative_result = robust_result_for(
+        projected_gain,
+        projected_mask,
+    )
 
-    return projected, conservative_result
+    return (
+        projected_command,
+        conservative_result,
+    )

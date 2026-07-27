@@ -74,25 +74,72 @@ class TrainingConfig:
 
 @dataclass
 class TrainingHistory:
-    environment_steps: list[int] = field(default_factory=list)
-    episode_returns: list[float] = field(default_factory=list)
-    episode_lengths: list[int] = field(default_factory=list)
-    actor_losses: list[float] = field(default_factory=list)
-    critic_losses: list[float] = field(default_factory=list)
-    evaluation_steps: list[int] = field(default_factory=list)
-    evaluation_returns: list[float] = field(default_factory=list)
-    evaluation_key_rates_bps: list[float] = field(default_factory=list)
-    evaluation_raw_kdr: list[float] = field(default_factory=list)
-    evaluation_reciprocity: list[float] = field(default_factory=list)
-    evaluation_feasibility: list[float] = field(default_factory=list)
+    environment_steps: list[int] = field(
+        default_factory=list
+    )
+    episode_returns: list[float] = field(
+        default_factory=list
+    )
+    episode_lengths: list[int] = field(
+        default_factory=list
+    )
+    actor_losses: list[float] = field(
+        default_factory=list
+    )
+    critic_losses: list[float] = field(
+        default_factory=list
+    )
+
+    evaluation_steps: list[int] = field(
+        default_factory=list
+    )
+    evaluation_returns: list[float] = field(
+        default_factory=list
+    )
+
+    # 旧字段保留，兼容旧 training_history.json
+    evaluation_key_rates_bps: list[float] = field(
+        default_factory=list
+    )
+
+    evaluation_training_key_rates_bps: list[float] = field(
+        default_factory=list
+    )
+    evaluation_final_key_rates_bps: list[float] = field(
+        default_factory=list
+    )
+    evaluation_system_training_key_rates_bps: list[
+        float
+    ] = field(default_factory=list)
+    evaluation_system_final_key_rates_bps: list[
+        float
+    ] = field(default_factory=list)
+
+    evaluation_raw_kdr: list[float] = field(
+        default_factory=list
+    )
+    evaluation_reciprocity: list[float] = field(
+        default_factory=list
+    )
+    evaluation_surface_power: list[float] = field(
+        default_factory=list
+    )
+    evaluation_feasibility: list[float] = field(
+        default_factory=list
+    )
 
 
 @dataclass(frozen=True)
 class EvaluationSummary:
     mean_return: float
     std_return: float
+
     mean_training_key_rate_bps: float
     mean_final_key_rate_bps: float
+
+    mean_system_training_key_rate_bps: float
+    mean_system_final_key_rate_bps: float
+
     mean_raw_kdr: float
     mean_post_reconciliation_kdr: float
     mean_reciprocity: float
@@ -406,6 +453,8 @@ def evaluate_agent(
     reciprocities: list[float] = []
     powers: list[float] = []
     feasibilities: list[float] = []
+    system_training_rates: list[float] = []
+    system_final_rates: list[float] = []
 
     for episode in range(episodes):
         state, _ = environment.reset(seed=seed + episode)
@@ -421,22 +470,49 @@ def evaluate_agent(
             reciprocities.append(float(info["reciprocity"]))
             powers.append(float(info["surface_dc_power"]))
             feasibilities.append(float(info["feasibility_rate"]))
+            system_training_rates.append(
+                float(info["system_training_key_rate_bps"])
+            )
+            system_final_rates.append(
+                float(info["system_final_key_rate_bps"])
+            )
             if terminated or truncated:
                 break
         returns.append(episode_return)
 
     return EvaluationSummary(
         mean_return=float(np.mean(returns)),
-        std_return=float(np.std(returns, ddof=1)) if len(returns) > 1 else 0.0,
-        mean_training_key_rate_bps=float(np.mean(training_rates)),
-        mean_final_key_rate_bps=float(np.mean(final_rates)),
+        std_return=(
+            float(np.std(returns, ddof=1))
+            if len(returns) > 1
+            else 0.0
+        ),
+        mean_training_key_rate_bps=float(
+            np.mean(training_rates)
+        ),
+        mean_final_key_rate_bps=float(
+            np.mean(final_rates)
+        ),
+        mean_system_training_key_rate_bps=float(
+            np.mean(system_training_rates)
+        ),
+        mean_system_final_key_rate_bps=float(
+            np.mean(system_final_rates)
+        ),
         mean_raw_kdr=float(np.mean(raw_kdrs)),
-        mean_post_reconciliation_kdr=float(np.mean(post_kdrs)),
-        mean_reciprocity=float(np.mean(reciprocities)),
-        mean_surface_dc_power=float(np.mean(powers)),
-        mean_feasibility_rate=float(np.mean(feasibilities)),
+        mean_post_reconciliation_kdr=float(
+            np.mean(post_kdrs)
+        ),
+        mean_reciprocity=float(
+            np.mean(reciprocities)
+        ),
+        mean_surface_dc_power=float(
+            np.mean(powers)
+        ),
+        mean_feasibility_rate=float(
+            np.mean(feasibilities)
+        ),
     )
-
 
 def train_td3(
     environment: RobustFullSchemeEnvironment,
@@ -509,12 +585,41 @@ def train_td3(
                 seed=config.seed + 100_000 + step,
             )
             history.evaluation_steps.append(step)
-            history.evaluation_returns.append(summary.mean_return)
-            history.evaluation_key_rates_bps.append(summary.mean_final_key_rate_bps)
-            history.evaluation_raw_kdr.append(summary.mean_raw_kdr)
-            history.evaluation_reciprocity.append(summary.mean_reciprocity)
-            history.evaluation_feasibility.append(summary.mean_feasibility_rate)
+            history.evaluation_returns.append(
+                summary.mean_return
+            )
 
+            # 旧字段兼容
+            history.evaluation_key_rates_bps.append(
+                summary.mean_final_key_rate_bps
+            )
+
+            history.evaluation_training_key_rates_bps.append(
+                summary.mean_training_key_rate_bps
+            )
+            history.evaluation_final_key_rates_bps.append(
+                summary.mean_final_key_rate_bps
+            )
+
+            history.evaluation_system_training_key_rates_bps.append(
+                summary.mean_system_training_key_rate_bps
+            )
+            history.evaluation_system_final_key_rates_bps.append(
+                summary.mean_system_final_key_rate_bps
+            )
+
+            history.evaluation_raw_kdr.append(
+                summary.mean_raw_kdr
+            )
+            history.evaluation_reciprocity.append(
+                summary.mean_reciprocity
+            )
+            history.evaluation_surface_power.append(
+                summary.mean_surface_dc_power
+            )
+            history.evaluation_feasibility.append(
+                summary.mean_feasibility_rate
+            )
         if progress_callback is not None:
             progress_callback(step, history)
 

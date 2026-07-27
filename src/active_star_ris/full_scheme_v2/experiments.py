@@ -19,15 +19,77 @@ Policy = Callable[[RobustFullSchemeEnvironment, np.ndarray], np.ndarray]
 class ExperimentSummary:
     method: str
     episodes: int
+
     mean_return: float
     std_return: float
+    ci95_return: float
+
     mean_training_key_rate_bps: float
+    std_training_key_rate_bps: float
+    ci95_training_key_rate_bps: float
+
     mean_final_key_rate_bps: float
+    std_final_key_rate_bps: float
+    ci95_final_key_rate_bps: float
+
+    mean_system_training_key_rate_bps: float
+    std_system_training_key_rate_bps: float
+    ci95_system_training_key_rate_bps: float
+
+    mean_system_final_key_rate_bps: float
+    std_system_final_key_rate_bps: float
+    ci95_system_final_key_rate_bps: float
+
     mean_raw_kdr: float
+    std_raw_kdr: float
+    ci95_raw_kdr: float
+
     mean_post_reconciliation_kdr: float
+    std_post_reconciliation_kdr: float
+    ci95_post_reconciliation_kdr: float
+
     mean_reciprocity: float
+    std_reciprocity: float
+    ci95_reciprocity: float
+
     mean_surface_dc_power: float
+    std_surface_dc_power: float
+    ci95_surface_dc_power: float
+
     mean_feasibility_rate: float
+    std_feasibility_rate: float
+    ci95_feasibility_rate: float
+
+
+def _summary_statistics(
+    values: list[float],
+) -> tuple[float, float, float]:
+    array = np.asarray(
+        values,
+        dtype=np.float64,
+    )
+
+    if array.size == 0:
+        raise ValueError(
+            "statistics values cannot be empty"
+        )
+
+    mean = float(np.mean(array))
+
+    if array.size < 2:
+        return mean, 0.0, 0.0
+
+    std = float(
+        np.std(array, ddof=1)
+    )
+
+    ci95 = float(
+        1.96
+        * std
+        / np.sqrt(array.size)
+    )
+
+    return mean, std, ci95
 
 
 def passive_policy(
@@ -73,9 +135,19 @@ def evaluate_policy(
     episodes: int,
     seed: int,
 ) -> ExperimentSummary:
+    if episodes < 1:
+        raise ValueError(
+            "episodes must be positive"
+        )
+
     episode_returns: list[float] = []
+
     training_rates: list[float] = []
     final_rates: list[float] = []
+
+    system_training_rates: list[float] = []
+    system_final_rates: list[float] = []
+
     raw_kdrs: list[float] = []
     post_kdrs: list[float] = []
     reciprocities: list[float] = []
@@ -83,39 +155,287 @@ def evaluate_policy(
     feasibilities: list[float] = []
 
     for episode in range(episodes):
-        state, _ = environment.reset(seed=seed + episode)
+        state, _ = environment.reset(
+            seed=seed + episode
+        )
+
         episode_return = 0.0
+
+        step_training_rates: list[float] = []
+        step_final_rates: list[float] = []
+
+        step_system_training_rates: list[
+            float
+        ] = []
+        step_system_final_rates: list[
+            float
+        ] = []
+
+        step_raw_kdrs: list[float] = []
+        step_post_kdrs: list[float] = []
+        step_reciprocities: list[float] = []
+        step_powers: list[float] = []
+        step_feasibilities: list[float] = []
+
         while True:
-            action = policy(environment, state)
-            state, reward, terminated, truncated, info = environment.step(action)
+            action = policy(
+                environment,
+                state,
+            )
+
+            (
+                state,
+                reward,
+                terminated,
+                truncated,
+                info,
+            ) = environment.step(action)
+
             episode_return += reward
-            training_rates.append(float(info["training_key_rate_bps"]))
-            final_rates.append(float(info["final_key_rate_bps"]))
-            raw_kdrs.append(float(info["raw_kdr"]))
-            post_kdrs.append(float(info["post_reconciliation_kdr"]))
-            reciprocities.append(float(info["reciprocity"]))
-            powers.append(float(info["surface_dc_power"]))
-            feasibilities.append(float(info["feasibility_rate"]))
+
+            step_training_rates.append(
+                float(
+                    info[
+                        "training_key_rate_bps"
+                    ]
+                )
+            )
+            step_final_rates.append(
+                float(
+                    info[
+                        "final_key_rate_bps"
+                    ]
+                )
+            )
+
+            step_system_training_rates.append(
+                float(
+                    info[
+                        "system_training_key_rate_bps"
+                    ]
+                )
+            )
+            step_system_final_rates.append(
+                float(
+                    info[
+                        "system_final_key_rate_bps"
+                    ]
+                )
+            )
+
+            step_raw_kdrs.append(
+                float(info["raw_kdr"])
+            )
+            step_post_kdrs.append(
+                float(
+                    info[
+                        "post_reconciliation_kdr"
+                    ]
+                )
+            )
+            step_reciprocities.append(
+                float(info["reciprocity"])
+            )
+            step_powers.append(
+                float(
+                    info["surface_dc_power"]
+                )
+            )
+            step_feasibilities.append(
+                float(
+                    info["feasibility_rate"]
+                )
+            )
+
             if terminated or truncated:
                 break
-        episode_returns.append(episode_return)
+
+        episode_returns.append(
+            float(episode_return)
+        )
+
+        training_rates.append(
+            float(
+                np.mean(step_training_rates)
+            )
+        )
+        final_rates.append(
+            float(
+                np.mean(step_final_rates)
+            )
+        )
+
+        system_training_rates.append(
+            float(
+                np.mean(
+                    step_system_training_rates
+                )
+            )
+        )
+        system_final_rates.append(
+            float(
+                np.mean(
+                    step_system_final_rates
+                )
+            )
+        )
+
+        raw_kdrs.append(
+            float(np.mean(step_raw_kdrs))
+        )
+        post_kdrs.append(
+            float(np.mean(step_post_kdrs))
+        )
+        reciprocities.append(
+            float(
+                np.mean(step_reciprocities)
+            )
+        )
+        powers.append(
+            float(np.mean(step_powers))
+        )
+        feasibilities.append(
+            float(
+                np.mean(step_feasibilities)
+            )
+        )
+
+    return_mean, return_std, return_ci = (
+        _summary_statistics(
+            episode_returns
+        )
+    )
+
+    training_mean, training_std, training_ci = (
+        _summary_statistics(
+            training_rates
+        )
+    )
+    final_mean, final_std, final_ci = (
+        _summary_statistics(
+            final_rates
+        )
+    )
+
+    (
+        system_training_mean,
+        system_training_std,
+        system_training_ci,
+    ) = _summary_statistics(
+        system_training_rates
+    )
+
+    (
+        system_final_mean,
+        system_final_std,
+        system_final_ci,
+    ) = _summary_statistics(
+        system_final_rates
+    )
+
+    raw_kdr_mean, raw_kdr_std, raw_kdr_ci = (
+        _summary_statistics(raw_kdrs)
+    )
+
+    (
+        post_kdr_mean,
+        post_kdr_std,
+        post_kdr_ci,
+    ) = _summary_statistics(post_kdrs)
+
+    (
+        reciprocity_mean,
+        reciprocity_std,
+        reciprocity_ci,
+    ) = _summary_statistics(
+        reciprocities
+    )
+
+    power_mean, power_std, power_ci = (
+        _summary_statistics(powers)
+    )
+
+    (
+        feasibility_mean,
+        feasibility_std,
+        feasibility_ci,
+    ) = _summary_statistics(
+        feasibilities
+    )
 
     return ExperimentSummary(
         method=method,
         episodes=episodes,
-        mean_return=float(np.mean(episode_returns)),
-        std_return=(
-            float(np.std(episode_returns, ddof=1))
-            if len(episode_returns) > 1
-            else 0.0
+
+        mean_return=return_mean,
+        std_return=return_std,
+        ci95_return=return_ci,
+
+        mean_training_key_rate_bps=(
+            training_mean
         ),
-        mean_training_key_rate_bps=float(np.mean(training_rates)),
-        mean_final_key_rate_bps=float(np.mean(final_rates)),
-        mean_raw_kdr=float(np.mean(raw_kdrs)),
-        mean_post_reconciliation_kdr=float(np.mean(post_kdrs)),
-        mean_reciprocity=float(np.mean(reciprocities)),
-        mean_surface_dc_power=float(np.mean(powers)),
-        mean_feasibility_rate=float(np.mean(feasibilities)),
+        std_training_key_rate_bps=(
+            training_std
+        ),
+        ci95_training_key_rate_bps=(
+            training_ci
+        ),
+
+        mean_final_key_rate_bps=final_mean,
+        std_final_key_rate_bps=final_std,
+        ci95_final_key_rate_bps=final_ci,
+
+        mean_system_training_key_rate_bps=(
+            system_training_mean
+        ),
+        std_system_training_key_rate_bps=(
+            system_training_std
+        ),
+        ci95_system_training_key_rate_bps=(
+            system_training_ci
+        ),
+
+        mean_system_final_key_rate_bps=(
+            system_final_mean
+        ),
+        std_system_final_key_rate_bps=(
+            system_final_std
+        ),
+        ci95_system_final_key_rate_bps=(
+            system_final_ci
+        ),
+
+        mean_raw_kdr=raw_kdr_mean,
+        std_raw_kdr=raw_kdr_std,
+        ci95_raw_kdr=raw_kdr_ci,
+
+        mean_post_reconciliation_kdr=(
+            post_kdr_mean
+        ),
+        std_post_reconciliation_kdr=(
+            post_kdr_std
+        ),
+        ci95_post_reconciliation_kdr=(
+            post_kdr_ci
+        ),
+
+        mean_reciprocity=reciprocity_mean,
+        std_reciprocity=reciprocity_std,
+        ci95_reciprocity=reciprocity_ci,
+
+        mean_surface_dc_power=power_mean,
+        std_surface_dc_power=power_std,
+        ci95_surface_dc_power=power_ci,
+
+        mean_feasibility_rate=(
+            feasibility_mean
+        ),
+        std_feasibility_rate=(
+            feasibility_std
+        ),
+        ci95_feasibility_rate=(
+            feasibility_ci
+        ),
     )
 
 
