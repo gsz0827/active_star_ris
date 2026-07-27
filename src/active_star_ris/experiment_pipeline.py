@@ -148,6 +148,7 @@ def build_environment_config(
     num_active_elements: int,
     ablation: str = "full_model",
     quick: bool = False,
+    allow_active_bypass_override: bool | None = None,
 ) -> RobustEnvironmentConfig:
     if ablation not in ABLATIONS:
         raise ValueError(
@@ -159,6 +160,15 @@ def build_environment_config(
     surface_power = raw_config["surface_power"]
     action_mapping = raw_config["action_mapping"]
     rl = raw_config["rl_environment"]
+
+    allow_active_bypass = bool(
+        action_mapping["allow_active_bypass"]
+    )
+
+    if allow_active_bypass_override is not None:
+        allow_active_bypass = bool(
+            allow_active_bypass_override
+        )
 
     objective = JointObjectiveConfig(
         **_filtered_kwargs(
@@ -364,11 +374,7 @@ def build_environment_config(
                 "robust_margin_multiplier"
             ]
         ),
-        allow_active_bypass=bool(
-            action_mapping[
-                "allow_active_bypass"
-            ]
-        ),
+        allow_active_bypass=allow_active_bypass,
 
         robust_objective_samples=robust_samples,
         robust_cvar_alpha=float(
