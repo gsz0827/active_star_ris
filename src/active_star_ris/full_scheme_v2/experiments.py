@@ -141,23 +141,76 @@ def run_baseline_comparison(
     episodes: int,
     seed: int,
 ) -> list[ExperimentSummary]:
-    methods: list[tuple[str, Policy]] = [
-        ("passive_star_ris", passive_policy),
-        ("random_partially_active", random_policy),
-        ("phase_aligned_partially_active", heuristic_policy),
-    ]
-    if agent is not None:
-        methods.append(("robust_td3", agent_policy(agent)))
+    """公平比较无源、部分有源启发式和鲁棒TD3。"""
 
+    # 严格无源 STAR-RIS：
+    # 所有 active_mask=False，因此：
+    #   - 没有内部放大噪声；
+    #   - 没有 active bias power；
+    #   - 没有 active control power；
+    #   - 所有单元增益固定为 1。
+    passive_mask = np.zeros(
+        environment.config.channel.num_elements,
+        dtype=bool,
+    )
+
+    passive_environment = RobustFullSchemeEnvironment(
+        environment.config,
+        active_mask=passive_mask,
+        seed=seed,
+    )
+
+    # 主无源baseline使用相位对齐，而不是故意使用零相位。
+    methods: list[
+        tuple[
+            str,
+            RobustFullSchemeEnvironment,
+            Policy,
+        ]
+    ] = [
+        (
+            "passive_star_ris",
+            passive_environment,
+            heuristic_policy,
+        ),
+        (
+            "random_partially_active",
+            environment,
+            random_policy,
+        ),
+        (
+            "phase_aligned_partially_active",
+            environment,
+            heuristic_policy,
+        ),
+    ]
+
+    if agent is not None:
+        methods.append(
+            (
+                "robust_td3",
+                environment,
+                agent_policy(agent),
+            )
+        )
+
+    # 所有方法使用相同 episode seed：
+    # seed, seed+1, seed+2, ...
+    #
+    # 这样信道/domain realization具有更好的可比性。
     return [
         evaluate_policy(
-            environment,
+            method_environment,
             policy,
             method=name,
             episodes=episodes,
-            seed=seed + 10_000 * index,
+            seed=seed,
         )
-        for index, (name, policy) in enumerate(methods)
+        for (
+            name,
+            method_environment,
+            policy,
+        ) in methods
     ]
 
 

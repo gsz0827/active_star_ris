@@ -201,7 +201,7 @@ def main() -> None:
         ),
     )
 
-    ablation_cases = [
+    sensitivity_cases = [
         ("complete_model", "complete", sweep_config),
         (
             "without_internal_noise",
@@ -257,27 +257,15 @@ def main() -> None:
                 ),
             ),
         ),
-        (
-            "without_cvar",
-            "without_cvar",
-            replace(
-                sweep_config,
-                robust=replace(
-                    sweep_config.robust,
-                    mean_weight=1.0,
-                    cvar_weight=0.0,
-                ),
-            ),
-        ),
     ]
     if args.quick:
-        ablation_cases = ablation_cases[:3]
+        sensitivity_cases = sensitivity_cases[:3]
     write_records_csv(
-        args.output_dir / "ablation_comparison.csv",
+        args.output_dir / "impairment_sensitivity.csv",
         run_named_config_sweep(
-            ablation_cases,
+            sensitivity_cases,
             fixed_dimension_policy_factory,
-            parameter_name="ablation",
+            parameter_name="sensitivity",
             episodes=episodes,
             seed=args.seed + 100_000,
         ),

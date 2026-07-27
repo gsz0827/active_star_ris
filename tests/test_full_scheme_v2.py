@@ -192,3 +192,103 @@ def test_environment_smoke_step() -> None:
     assert not terminated
     assert not truncated
     assert "training_key_rate_bps" in info
+
+
+def test_hardware_margin_does_not_increase_commanded_gain() -> None:
+    n = 8
+    active = build_active_mask(n, 0.5)
+
+    hardware = HardwareConfig(
+        maximum_active_gain=4.0,
+        per_active_element_saturation_power=100.0,
+    )
+
+    power = PowerConfig(
+        maximum_rf_output_power=1000.0,
+        maximum_total_dc_power=1000.0,
+        hardware_gain_margin_db=1.0,
+    )
+
+    action_dim = int(
+        np.count_nonzero(active) + 3 * n
+    )
+
+    action = np.zeros(action_dim, dtype=np.float64)
+
+    command = decode_action(
+        action,
+        active,
+        hardware,
+    )
+
+    requested_gain = command.gain.copy()
+
+    input_power = np.full(
+        n,
+        0.01,
+        dtype=np.float64,
+    )
+
+    projected, result = (
+        project_command_to_power_constraints(
+            command,
+            input_power,
+            input_power,
+            input_power,
+            power_config=power,
+            hardware_config=hardware,
+        )
+    )
+
+    assert result.fully_feasible
+
+    # 鲁棒裕量只能使允许的控制增益更保守，
+    # 绝不能主动增加控制增益。
+    assert np.all(
+        projected.gain[active]
+        <= requested_gain[active] + 1.0e-12
+    )
+
+
+def test_key_rate_duration_accounts_for_pilot_symbols() -> None:
+    source = np.linspace(
+        -2.0,
+        2.0,
+        1024,
+        dtype=np.float64,
+    ).astype(np.complex128)
+
+    key_config = KeyGenerationConfig(
+        privacy_margin_bits=0,
+        verification_tag_bits=1,
+    )
+
+    probing = ProbingConfig(
+        samples_per_step=1024,
+        pilot_symbols_controller=8,
+    )
+
+    short_result = evaluate_key_rate(
+        source,
+        source,
+        key_config=key_config,
+        probing_config=probing,
+        rng=np.random.default_rng(1),
+        full_protocol=False,
+        reverse_pilot_symbols=8,
+    )
+
+    long_result = evaluate_key_rate(
+        source,
+        source,
+        key_config=key_config,
+        probing_config=probing,
+        rng=np.random.default_rng(1),
+        full_protocol=False,
+        reverse_pilot_symbols=32,
+    )
+
+    assert (
+        long_result.frame_duration_seconds
+        > short_result.frame_duration_seconds
+    )

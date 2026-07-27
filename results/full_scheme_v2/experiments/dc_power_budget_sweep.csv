@@ -1,0 +1,3 @@
+method,episodes,mean_return,std_return,mean_training_key_rate_bps,mean_final_key_rate_bps,mean_raw_kdr,mean_post_reconciliation_kdr,mean_reciprocity,mean_surface_dc_power,mean_feasibility_rate,dc_budget
+dc_budget_2,1,-0.36344107275557264,0.0,0.0,0.0,0.17017178871274702,0.03737314783621412,0.8225152052385387,0.29400000000000004,1.0,2.0
+dc_budget_5,1,-0.380807156027442,0.0,0.0,0.0,0.17596730628730906,0.036495113673570154,0.8370551728044857,0.29400000000000004,1.0,5.0

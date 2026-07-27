@@ -1,0 +1,11 @@
+{
+  "mean_return": -64.46657491138491,
+  "std_return": 0.0,
+  "mean_training_key_rate_bps": 0.0,
+  "mean_final_key_rate_bps": 0.0,
+  "mean_raw_kdr": 0.2799442830687454,
+  "mean_post_reconciliation_kdr": 0.12477232578072375,
+  "mean_reciprocity": 0.5820049264640026,
+  "mean_surface_dc_power": 0.29400000000000004,
+  "mean_feasibility_rate": 0.8
+}

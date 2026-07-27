@@ -81,6 +81,9 @@ def evaluate_objective(
         probing_config=config.probing,
         rng=rng,
         full_protocol=full_protocol,
+        reverse_pilot_symbols=(
+            config.probing.pilot_symbols_transmission_user
+        ),
     )
     reflection_key = evaluate_key_rate(
         probing.reflection.observation_forward,
@@ -89,8 +92,10 @@ def evaluate_objective(
         probing_config=config.probing,
         rng=rng,
         full_protocol=full_protocol,
+        reverse_pilot_symbols=(
+            config.probing.pilot_symbols_reflection_user
+        ),
     )
-
     weight_sum = (
         config.objective.transmission_weight
         + config.objective.reflection_weight

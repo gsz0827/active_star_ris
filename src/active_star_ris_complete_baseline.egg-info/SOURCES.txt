@@ -4,6 +4,7 @@ src/active_star_ris/__init__.py
 src/active_star_ris/action_mapping.py
 src/active_star_ris/channels.py
 src/active_star_ris/csi_estimation.py
+src/active_star_ris/experiment_pipeline.py
 src/active_star_ris/finite_length_security.py
 src/active_star_ris/hardware_impairments.py
 src/active_star_ris/imperfect_csi_sweep.py
@@ -26,6 +27,18 @@ src/active_star_ris/sweep_statistics.py
 src/active_star_ris/system.py
 src/active_star_ris/td3_agent.py
 src/active_star_ris/td3_training.py
+src/active_star_ris/full_scheme_v2/__init__.py
+src/active_star_ris/full_scheme_v2/channels.py
+src/active_star_ris/full_scheme_v2/config.py
+src/active_star_ris/full_scheme_v2/environment.py
+src/active_star_ris/full_scheme_v2/experiments.py
+src/active_star_ris/full_scheme_v2/hardware.py
+src/active_star_ris/full_scheme_v2/key_protocol.py
+src/active_star_ris/full_scheme_v2/models.py
+src/active_star_ris/full_scheme_v2/objective.py
+src/active_star_ris/full_scheme_v2/power.py
+src/active_star_ris/full_scheme_v2/probing.py
+src/active_star_ris/full_scheme_v2/td3.py
 src/active_star_ris_complete_baseline.egg-info/PKG-INFO
 src/active_star_ris_complete_baseline.egg-info/SOURCES.txt
 src/active_star_ris_complete_baseline.egg-info/dependency_links.txt
@@ -34,7 +47,9 @@ src/active_star_ris_complete_baseline.egg-info/top_level.txt
 tests/test_action_mapping.py
 tests/test_channels.py
 tests/test_csi_estimation.py
+tests/test_experiment_pipeline.py
 tests/test_finite_length_security.py
+tests/test_full_scheme_v2.py
 tests/test_hardware_impairments.py
 tests/test_imperfect_channel_sampling.py
 tests/test_imperfect_csi_evaluation.py

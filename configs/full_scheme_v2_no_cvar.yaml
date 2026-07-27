@@ -1,0 +1,141 @@
+channel:
+  num_elements: 32
+  active_ratio: 0.25
+  rician_k_factor: 3.0
+
+  controller_ris_power: 1.0
+  ris_transmission_power: 1.0
+  ris_reflection_power: 1.0
+  direct_transmission_power: 0.10
+  direct_reflection_power: 0.10
+
+  within_block_correlation: 0.995
+  between_step_correlation: 0.98
+  forward_reverse_delay_seconds: 0.001
+  channel_coherence_time_seconds: 0.010
+  control_csi_nmse_db: -15.0
+
+probing:
+  samples_per_step: 256
+
+  pilot_symbols_controller: 16
+  pilot_symbols_transmission_user: 16
+  pilot_symbols_reflection_user: 16
+
+  pilot_power_controller: 1.0
+  pilot_power_transmission_user: 1.0
+  pilot_power_reflection_user: 1.0
+
+  input_referred_amplifier_noise_variance: 0.001
+  receiver_noise_variance_controller: 0.001
+  receiver_noise_variance_transmission_user: 0.001
+  receiver_noise_variance_reflection_user: 0.001
+
+  pilot_symbol_duration_seconds: 0.0001
+  forward_reverse_guard_seconds: 0.00005
+  branch_switch_guard_seconds: 0.0001
+
+hardware:
+  maximum_active_gain: 4.0
+
+  static_gain_error_std_db: 0.20
+  directional_gain_error_std_db: 0.10
+  static_phase_error_std_rad: 0.05
+  directional_phase_error_std_rad: 0.03
+  fast_phase_jitter_std_rad: 0.01
+  transmission_split_error_std: 0.02
+
+  transmission_amplitude_phase_coupling_rad_per_db: 0.01
+  reflection_amplitude_phase_coupling_rad_per_db: 0.01
+
+  phase_quantization_bits: 4
+  gain_quantization_bits: 4
+  phase_coupling_mode: independent
+
+  per_active_element_saturation_power: 5.0
+
+  endpoint_gain_error_std_db: 0.10
+  endpoint_phase_error_std_rad: 0.03
+
+power:
+  maximum_rf_output_power: 35.0
+  maximum_total_dc_power: 5.0
+  amplifier_efficiency: 0.35
+
+  controller_static_power: 0.10
+  passive_element_control_power: 0.001
+  active_element_control_power: 0.005
+  active_element_bias_power: 0.01
+  switching_network_static_power: 0.05
+
+  controller_time_fraction: 0.333333
+  transmission_time_fraction: 0.333333
+  reflection_time_fraction: 0.333334
+
+  projection_iterations: 40
+  projection_tolerance: 1.0e-9
+  csi_power_margin_std: 2.0
+  hardware_gain_margin_db: 0.60
+
+key_generation:
+  feature: real
+  guard_band_sigma: 0.10
+  selection_policy: alice
+
+  initial_block_size: 8
+  reconciliation_passes: 8
+  maximum_block_doublings: 3
+  verification_tag_bits: 32
+  privacy_margin_bits: 64
+  maximum_final_key_bits: 256
+
+  minimum_entropy_bits_per_retained_bit: 0.80
+  reconciliation_efficiency: 1.15
+  maximum_trainable_raw_kdr: 0.30
+
+  public_channel_rate_bps: 1000000.0
+  fixed_processing_delay_seconds: 0.0
+  include_toeplitz_seed_in_public_time: false
+
+objective:
+  key_rate_mode: training_bound
+
+  key_rate_weight: 1.0
+
+  raw_kdr_weight: 1.0
+  post_reconciliation_kdr_weight: 0.0
+
+  reciprocity_weight: 0.20
+  surface_power_weight: 0.10
+  constraint_violation_weight: 10.0
+
+  key_rate_reference_bps: 10000.0
+  raw_kdr_reference: 0.50
+  post_reconciliation_kdr_reference: 0.01
+  surface_power_reference_watt: 5.0
+
+  transmission_weight: 0.5
+  reflection_weight: 0.5
+
+robust:
+  objective_samples: 16
+  cvar_alpha: 0.25
+  mean_weight: 1.00
+  cvar_weight: 0.00
+  minimum_tail_samples: 4
+
+  nmse_db_min: -20.0
+  nmse_db_max: -10.0
+  amplifier_noise_scale_min: 0.5
+  amplifier_noise_scale_max: 2.0
+  receiver_noise_scale_min: 0.5
+  receiver_noise_scale_max: 2.0
+  rf_budget_scale_min: 0.80
+  rf_budget_scale_max: 1.20
+  dc_budget_scale_min: 0.80
+  dc_budget_scale_max: 1.20
+
+  include_known_system_context: true
+  include_oracle_impairment_context: false
+
+max_episode_steps: 50

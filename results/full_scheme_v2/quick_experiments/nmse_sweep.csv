@@ -1,0 +1,3 @@
+method,episodes,mean_return,std_return,mean_training_key_rate_bps,mean_final_key_rate_bps,mean_raw_kdr,mean_post_reconciliation_kdr,mean_reciprocity,mean_surface_dc_power,mean_feasibility_rate,nmse_db
+nmse_-20_db,1,-10.269169133434044,0.0,0.0,0.0,0.18606234969859708,0.04941263832624562,0.8439330547221845,0.29400000000000004,0.75,-20.0
+nmse_-10_db,1,-6.693910787465258,0.0,0.0,0.0,0.14555133117635596,0.033595495991083746,0.8284811600790545,0.29400000000000004,0.875,-10.0

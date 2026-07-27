@@ -101,8 +101,10 @@ objective:
   key_rate_mode: training_bound
 
   key_rate_weight: 1.0
-  raw_kdr_weight: 0.50
-  post_reconciliation_kdr_weight: 1.0
+
+  raw_kdr_weight: 1.0
+  post_reconciliation_kdr_weight: 0.0
+
   reciprocity_weight: 0.20
   surface_power_weight: 0.10
   constraint_violation_weight: 10.0

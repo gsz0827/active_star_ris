@@ -77,7 +77,15 @@ class RobustFullSchemeEnvironment:
     def _calculate_state_dimension(self) -> int:
         n = self.config.channel.num_elements
         # g, h_T, h_R: each real+imag => 6N; two direct links => 4.
-        dimension = 6 * n + 4 + 7
+        # g, h_T, h_R:
+        # real + imag -> 6N
+        #
+        # direct T/R complex coefficients -> 4
+        #
+        # five relative link-power features -> 5
+        #
+        # previous-step metrics -> 7
+        dimension = 6 * n + 4 + 5 + 7
         if self.config.robust.include_known_system_context:
             dimension += 2  # normalized RF and DC budgets.
         if self.config.robust.include_oracle_impairment_context:
@@ -162,15 +170,76 @@ class RobustFullSchemeEnvironment:
         normalized = array / scale
         return np.concatenate((normalized.real, normalized.imag)).astype(np.float64)
 
+    @staticmethod
+    def _relative_log_power(
+        values: np.ndarray | complex,
+        reference_power: float,
+    ) -> float:
+        array = np.asarray(
+            values,
+            dtype=np.complex128,
+        ).reshape(-1)
+
+        measured_power = max(
+            float(np.mean(np.abs(array) ** 2)),
+            1.0e-12,
+        )
+
+        reference = max(
+            float(reference_power),
+            1.0e-12,
+        )
+
+        # 相对于配置中平均链路功率的 dB/log 特征。
+        # 限制到 [-1, 1]，避免网络输入尺度过大。
+        value = np.log10(
+            measured_power / reference
+        )
+
+        return float(
+            np.clip(value, -6.0, 6.0) / 6.0
+        )
+
     def _build_state(self) -> np.ndarray:
         if self._estimated_snapshot is None or self._domain is None:
             raise RuntimeError("environment must be reset first")
 
         estimate = self._estimated_snapshot
+        link_power_features = np.asarray(
+            [
+                self._relative_log_power(
+                    estimate.controller_to_ris,
+                    self.config.channel.controller_ris_power,
+                ),
+                self._relative_log_power(
+                    estimate.ris_to_transmission,
+                    self.config.channel.ris_transmission_power,
+                ),
+                self._relative_log_power(
+                    estimate.ris_to_reflection,
+                    self.config.channel.ris_reflection_power,
+                ),
+                self._relative_log_power(
+                    estimate.direct_transmission,
+                    self.config.channel.direct_transmission_power,
+                ),
+                self._relative_log_power(
+                    estimate.direct_reflection,
+                    self.config.channel.direct_reflection_power,
+                ),
+            ],
+            dtype=np.float64,
+        )        
         components = [
-            self._normalize_complex(estimate.controller_to_ris),
-            self._normalize_complex(estimate.ris_to_transmission),
-            self._normalize_complex(estimate.ris_to_reflection),
+            self._normalize_complex(
+                estimate.controller_to_ris
+            ),
+            self._normalize_complex(
+                estimate.ris_to_transmission
+            ),
+            self._normalize_complex(
+                estimate.ris_to_reflection
+            ),
             np.asarray(
                 [
                     estimate.direct_transmission.real,
@@ -180,7 +249,11 @@ class RobustFullSchemeEnvironment:
                 ],
                 dtype=np.float64,
             ),
-            np.asarray(self._last_metrics, dtype=np.float64),
+            link_power_features,
+            np.asarray(
+                self._last_metrics,
+                dtype=np.float64,
+            ),
         ]
 
         if self.config.robust.include_known_system_context:

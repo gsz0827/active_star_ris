@@ -90,7 +90,7 @@ def main() -> None:
         replay_capacity=max(10_000, steps * 2),
         random_action_steps=min(5_000, max(1, steps // 10)),
         learning_starts=min(5_000, max(1, steps // 10)),
-        batch_size=64 if args.smoke else 256,
+        batch_size=8 if args.smoke else 256,
         evaluation_interval=max(1, steps // 5),
         evaluation_episodes=evaluation_episodes,
         seed=args.seed,
@@ -114,6 +114,16 @@ def main() -> None:
         evaluation_environment=evaluation_environment,
         progress_callback=progress,
     )
+
+    if args.smoke and agent.update_count <= 0:
+        raise RuntimeError(
+            "Smoke test completed without any TD3 gradient update."
+        )
+
+    if args.smoke:
+        print(
+            f"Smoke TD3 updates: {agent.update_count}"
+        )
 
     checkpoint_path = args.output_dir / "td3_final.pt"
     agent.save(

@@ -170,12 +170,37 @@ def _frame_duration(
     public_bits: int,
     probing: ProbingConfig,
     key: KeyGenerationConfig,
+    reverse_pilot_symbols: int,
 ) -> float:
+    if reverse_pilot_symbols < 1:
+        raise ValueError(
+            "reverse_pilot_symbols must be positive"
+        )
+
+    # 一次双向信道观测：
+    #
+    # Controller -> user:
+    #     L_controller 个 pilot symbols
+    #
+    # user -> Controller:
+    #     L_user 个 pilot symbols
+    #
+    # 中间再加 forward/reverse guard。
+    symbols_per_sample = (
+        probing.pilot_symbols_controller
+        + reverse_pilot_symbols
+    )
+
     probing_time = total_samples * (
-        2.0 * probing.pilot_symbol_duration_seconds
+        symbols_per_sample
+        * probing.pilot_symbol_duration_seconds
         + probing.forward_reverse_guard_seconds
     )
-    public_time = public_bits / key.public_channel_rate_bps
+
+    public_time = (
+        public_bits / key.public_channel_rate_bps
+    )
+
     return max(
         probing_time
         + probing.branch_switch_guard_seconds
@@ -193,8 +218,18 @@ def evaluate_key_rate(
     probing_config: ProbingConfig,
     rng: np.random.Generator,
     full_protocol: bool,
+    reverse_pilot_symbols: int | None = None,
 ) -> KeyRateResult:
     key_config.validate()
+    if reverse_pilot_symbols is None:
+        reverse_pilot_symbols = (
+            probing_config.pilot_symbols_controller
+        )
+
+    if reverse_pilot_symbols < 1:
+        raise ValueError(
+            "reverse_pilot_symbols must be positive"
+        )
     total_samples = int(np.asarray(observation_a).reshape(-1).size)
 
     bits_a, bits_b, selection_bits, retained, raw_kdr = quantize_with_guard_band(
@@ -209,6 +244,7 @@ def evaluate_key_rate(
             selection_bits,
             probing_config,
             key_config,
+            reverse_pilot_symbols,
         )
         return KeyRateResult(
             total_samples=total_samples,
@@ -303,6 +339,7 @@ def evaluate_key_rate(
         public_bits,
         probing_config,
         key_config,
+        reverse_pilot_symbols,
     )
 
     return KeyRateResult(
