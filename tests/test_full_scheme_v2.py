@@ -22,7 +22,17 @@ from active_star_ris.full_scheme_v2.config import (
 from active_star_ris.full_scheme_v2.environment import RobustFullSchemeEnvironment
 from active_star_ris.full_scheme_v2.hardware import build_active_mask, decode_action
 from active_star_ris.full_scheme_v2.key_protocol import evaluate_key_rate
-from active_star_ris.full_scheme_v2.power import project_command_to_power_constraints
+from active_star_ris.full_scheme_v2.power import (
+    conservative_input_powers,
+    project_command_to_power_constraints,
+)
+from active_star_ris.full_scheme_v2.power import (
+    conservative_input_powers,
+    project_command_to_power_constraints,
+)
+from active_star_ris.full_scheme_v2.models import (
+    IdealSurfaceCommand,
+)
 from active_star_ris.full_scheme_v2.td3 import ReplayBuffer
 
 
@@ -192,6 +202,43 @@ def test_environment_smoke_step() -> None:
     assert not terminated
     assert not truncated
     assert "training_key_rate_bps" in info
+    assert "final_key_rate_bps" in info
+
+    assert (
+        "system_training_key_rate_bps"
+        in info
+    )
+    assert (
+        "system_final_key_rate_bps"
+        in info
+    )
+
+    assert np.isfinite(
+        info[
+            "system_training_key_rate_bps"
+        ]
+    )
+    assert np.isfinite(
+        info[
+            "system_final_key_rate_bps"
+        ]
+    )
+
+    assert (
+        info[
+            "system_training_key_rate_bps"
+        ]
+        >= 0.0
+    )
+    assert (
+        info[
+            "system_final_key_rate_bps"
+        ]
+        >= 0.0
+    )
+
+    assert "bypassed_active_elements" in info
+    assert "remaining_active_elements" in info
 
 
 def test_hardware_margin_does_not_increase_commanded_gain() -> None:
@@ -291,4 +338,230 @@ def test_key_rate_duration_accounts_for_pilot_symbols() -> None:
     assert (
         long_result.frame_duration_seconds
         > short_result.frame_duration_seconds
+    )
+
+
+def test_hardware_scale_is_in_oracle_context() -> None:
+    config = load_environment_config(
+        CONFIG_PATH
+    )
+
+    robust = replace(
+        config.robust,
+        include_oracle_impairment_context=True,
+        hardware_error_scale_min=1.5,
+        hardware_error_scale_max=1.5,
+    )
+
+    config = replace(
+        config,
+        robust=robust,
+        max_episode_steps=1,
+    )
+
+    environment = RobustFullSchemeEnvironment(
+        config,
+        seed=10,
+    )
+
+    state, info = environment.reset(
+        seed=10
+    )
+
+    assert state.size == environment.state_dim
+
+    domain = info["domain"]
+
+    assert np.isclose(
+        domain.hardware_error_scale,
+        1.5,
+    )
+
+    # 上下界相同时，归一化硬件误差特征为 0
+    assert np.isclose(
+        state[-1],
+        0.0,
+        atol=1.0e-6,
+    )
+
+
+def test_amplifier_noise_scale_increases_input_power() -> None:
+    n = 8
+
+    channel = np.ones(
+        n,
+        dtype=np.complex128,
+    )
+
+    probing = ProbingConfig(
+        input_referred_amplifier_noise_variance=0.1,
+    )
+
+    power = PowerConfig()
+
+    low = conservative_input_powers(
+        channel,
+        channel,
+        channel,
+        nmse_db=-20.0,
+        probing=probing,
+        power=power,
+        amplifier_noise_scale=0.5,
+    )
+
+    high = conservative_input_powers(
+        channel,
+        channel,
+        channel,
+        nmse_db=-20.0,
+        probing=probing,
+        power=power,
+        amplifier_noise_scale=2.0,
+    )
+
+    for low_values, high_values in zip(
+        low,
+        high,
+        strict=True,
+    ):
+        assert np.all(
+            high_values > low_values
+        )
+
+
+def test_power_projection_uses_passive_bypass() -> None:
+    n = 4
+
+    active_mask = np.ones(
+        n,
+        dtype=bool,
+    )
+
+    command = IdealSurfaceCommand(
+        gain=np.full(
+            n,
+            2.0,
+            dtype=np.float64,
+        ),
+        beta_transmission=np.full(
+            n,
+            0.5,
+            dtype=np.float64,
+        ),
+        phase_transmission=np.zeros(
+            n,
+            dtype=np.float64,
+        ),
+        phase_reflection=np.zeros(
+            n,
+            dtype=np.float64,
+        ),
+        active_mask=active_mask,
+    )
+
+    hardware = HardwareConfig(
+        maximum_active_gain=4.0,
+        per_active_element_saturation_power=100.0,
+        gain_quantization_bits=None,
+    )
+
+    # active 单元的固定控制与偏置功耗很高，
+    # passive 单元功耗很低。
+    power = PowerConfig(
+        maximum_rf_output_power=100.0,
+        maximum_total_dc_power=0.1,
+        controller_static_power=0.0,
+        switching_network_static_power=0.0,
+        passive_element_control_power=0.001,
+        active_element_control_power=0.2,
+        active_element_bias_power=0.2,
+        hardware_gain_margin_db=0.0,
+    )
+
+    input_power = np.zeros(
+        n,
+        dtype=np.float64,
+    )
+
+    projected, result = (
+        project_command_to_power_constraints(
+            command,
+            input_power,
+            input_power,
+            input_power,
+            power_config=power,
+            hardware_config=hardware,
+        )
+    )
+
+    # 所有原有源单元应切换到 passive bypass
+    assert not np.any(
+        projected.active_mask
+    )
+
+    assert np.allclose(
+        projected.gain,
+        1.0,
+    )
+
+    assert result.fully_feasible
+
+    expected_passive_power = (
+        n
+        * power.passive_element_control_power
+    )
+
+    assert np.isclose(
+        result.total_surface_dc_power,
+        expected_passive_power,
+    )
+
+
+def test_experiment_summary_contains_system_rate() -> None:
+    config = load_environment_config(
+        CONFIG_PATH
+    )
+
+    config = replace(
+        config,
+        probing=replace(
+            config.probing,
+            samples_per_step=64,
+        ),
+        robust=replace(
+            config.robust,
+            objective_samples=4,
+            cvar_alpha=1.0,
+            minimum_tail_samples=4,
+        ),
+        max_episode_steps=1,
+    )
+
+    environment = RobustFullSchemeEnvironment(
+        config,
+        seed=20,
+    )
+
+    summary = evaluate_policy(
+        environment,
+        heuristic_policy,
+        method="test",
+        episodes=2,
+        seed=20,
+    )
+
+    assert np.isfinite(
+        summary.mean_system_training_key_rate_bps
+    )
+    assert np.isfinite(
+        summary.mean_system_final_key_rate_bps
+    )
+
+    assert (
+        summary.std_system_final_key_rate_bps
+        >= 0.0
+    )
+    assert (
+        summary.ci95_system_final_key_rate_bps
+        >= 0.0
     )
