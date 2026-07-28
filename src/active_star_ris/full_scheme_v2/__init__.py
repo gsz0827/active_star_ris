@@ -1,43 +1,13 @@
-"""完整部分有源STAR-RIS物理层密钥生成与鲁棒TD3实现。"""
+"""Paper-oriented active STAR-RIS physical-layer key generation package."""
 
-from .config import (
-    ChannelConfig,
-    EnvironmentConfig,
-    HardwareConfig,
-    KeyGenerationConfig,
-    ObjectiveConfig,
-    PowerConfig,
-    ProbingConfig,
-    RobustConfig,
-    load_environment_config,
-)
-from .environment import RobustFullSchemeEnvironment
-from .td3 import (
-    EvaluationSummary,
-    TD3Agent,
-    TD3Config,
-    TrainingConfig,
-    TrainingHistory,
-    evaluate_agent,
-    train_td3,
-)
+from .config import FullSchemeConfig, load_config, save_config
+from .environment import ActiveStarRisKeyEnvironment
+from .td3 import TD3Agent
 
 __all__ = [
-    "ChannelConfig",
-    "EnvironmentConfig",
-    "HardwareConfig",
-    "KeyGenerationConfig",
-    "ObjectiveConfig",
-    "PowerConfig",
-    "ProbingConfig",
-    "RobustConfig",
-    "RobustFullSchemeEnvironment",
+    "ActiveStarRisKeyEnvironment",
+    "FullSchemeConfig",
     "TD3Agent",
-    "TD3Config",
-    "TrainingConfig",
-    "TrainingHistory",
-    "EvaluationSummary",
-    "evaluate_agent",
-    "train_td3",
-    "load_environment_config",
+    "load_config",
+    "save_config",
 ]

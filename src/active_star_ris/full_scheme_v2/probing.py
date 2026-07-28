@@ -2,242 +2,175 @@ from __future__ import annotations
 
 import numpy as np
 
-from .channels import complex_normal
-from .config import ProbingConfig
-from .models import (
-    ActualSurfaceCoefficients,
-    BidirectionalChannelBlock,
-    BranchProbingResult,
-    DualProbingResult,
-    EndpointRFRealization,
-)
+from .channels import delayed_reverse_block, evolve_block, complex_normal
+from .config import ChannelConfig, ProbingConfig
+from .models import BranchObservations, DirectionalSurfaceCoefficients, StaticChannels
 
 
-def _simulate_branch(
-    input_forward: np.ndarray,
-    output_forward: np.ndarray,
-    input_reverse: np.ndarray,
-    output_reverse: np.ndarray,
-    direct_forward: np.ndarray,
-    direct_reverse: np.ndarray,
-    phi_forward: np.ndarray,
-    phi_reverse: np.ndarray,
+def _active_noise(
+    downstream: np.ndarray,
+    coefficients: np.ndarray,
     active_mask: np.ndarray,
-    *,
-    pilot_power_forward: float,
-    pilot_power_reverse: float,
-    pilot_symbols_forward: int,
-    pilot_symbols_reverse: int,
-    amplifier_noise_variance: float,
-    receiver_noise_variance_forward: float,
-    receiver_noise_variance_reverse: float,
-    tx_coefficient_forward: complex,
-    rx_coefficient_forward: complex,
-    tx_coefficient_reverse: complex,
-    rx_coefficient_reverse: complex,
+    variance: float,
     rng: np.random.Generator,
-) -> BranchProbingResult:
-    x_f = np.asarray(input_forward, dtype=np.complex128)
-    y_f = np.asarray(output_forward, dtype=np.complex128)
-    x_r = np.asarray(input_reverse, dtype=np.complex128)
-    y_r = np.asarray(output_reverse, dtype=np.complex128)
+) -> np.ndarray:
+    if variance <= 0.0 or not np.any(active_mask):
+        return np.zeros(downstream.shape[0], dtype=np.complex128)
+    source = complex_normal(rng, downstream.shape) * np.sqrt(variance)
+    source[:, ~active_mask] = 0.0
+    return np.sum(downstream * coefficients * source, axis=1)
 
-    if x_f.ndim != 2 or y_f.shape != x_f.shape:
-        raise ValueError("forward channels must be equal-sized matrices")
-    if x_r.shape != x_f.shape or y_r.shape != x_f.shape:
-        raise ValueError("reverse channels must match forward channel shape")
 
-    samples, num_elements = x_f.shape
-    active = np.asarray(active_mask, dtype=bool).reshape(-1)
-    if active.size != num_elements:
-        raise ValueError("active_mask size mismatch")
+def _receiver_noise(samples: int, variance: float, rng: np.random.Generator) -> np.ndarray:
+    if variance <= 0.0:
+        return np.zeros(samples, dtype=np.complex128)
+    return complex_normal(rng, samples) * np.sqrt(variance)
 
-    phi_f = np.asarray(phi_forward, dtype=np.complex128).reshape(-1)
-    phi_r = np.asarray(phi_reverse, dtype=np.complex128).reshape(-1)
-    if phi_f.size != num_elements or phi_r.size != num_elements:
-        raise ValueError("surface coefficient size mismatch")
 
-    d_f = np.asarray(direct_forward, dtype=np.complex128).reshape(-1)
-    d_r = np.asarray(direct_reverse, dtype=np.complex128).reshape(-1)
-    if d_f.size != samples or d_r.size != samples:
-        raise ValueError("direct channel sample count mismatch")
+def simulate_branch(
+    *,
+    controller_ris: np.ndarray,
+    ris_user: np.ndarray,
+    ris_eve: np.ndarray,
+    direct_legitimate: complex,
+    direct_controller_eve: complex,
+    direct_user_eve: complex,
+    coefficients_forward: np.ndarray,
+    coefficients_reverse: np.ndarray,
+    active_mask: np.ndarray,
+    pilot_power_controller: float,
+    pilot_power_user: float,
+    receiver_noise_variance_alice: float,
+    receiver_noise_variance_bob: float,
+    receiver_noise_variance_eve: float,
+    amplifier_noise_variance: float,
+    channel_config: ChannelConfig,
+    probing_config: ProbingConfig,
+    rng: np.random.Generator,
+) -> BranchObservations:
+    samples = probing_config.samples_per_step
+    within = channel_config.within_block_correlation
+    delay = channel_config.forward_reverse_correlation
+    g_forward = evolve_block(controller_ris, samples, within, rng)
+    h_forward = evolve_block(ris_user, samples, within, rng)
+    e_forward = evolve_block(ris_eve, samples, within, rng)
+    g_reverse = delayed_reverse_block(g_forward, delay, rng)
+    h_reverse = delayed_reverse_block(h_forward, delay, rng)
+    e_reverse = delayed_reverse_block(e_forward, delay, rng)
+    direct_forward = evolve_block(np.asarray(direct_legitimate), samples, within, rng).reshape(-1)
+    direct_reverse = delayed_reverse_block(direct_forward, delay, rng).reshape(-1)
 
-    effective_forward = (
-        d_f + np.sum(x_f * phi_f[None, :] * y_f, axis=1)
-    ) * tx_coefficient_forward * rx_coefficient_forward
-
-    effective_reverse = (
-        d_r + np.sum(x_r * phi_r[None, :] * y_r, axis=1)
-    ) * tx_coefficient_reverse * rx_coefficient_reverse
-
-    active_noise_forward = np.zeros((samples, num_elements), dtype=np.complex128)
-    active_noise_reverse = np.zeros((samples, num_elements), dtype=np.complex128)
-    if np.any(active) and amplifier_noise_variance > 0.0:
-        active_noise_forward[:, active] = complex_normal(
-            rng,
-            (samples, int(np.count_nonzero(active))),
-            variance=amplifier_noise_variance,
-        )
-        active_noise_reverse[:, active] = complex_normal(
-            rng,
-            (samples, int(np.count_nonzero(active))),
-            variance=amplifier_noise_variance,
-        )
-
-    forwarded_forward = np.sum(
-        y_f * phi_f[None, :] * active_noise_forward,
-        axis=1,
-    ) * rx_coefficient_forward
-    forwarded_reverse = np.sum(
-        y_r * phi_r[None, :] * active_noise_reverse,
-        axis=1,
-    ) * rx_coefficient_reverse
-
-    receiver_forward = complex_normal(
+    effective_forward = direct_forward + np.sum(h_forward * coefficients_forward * g_forward, axis=1)
+    effective_reverse = direct_reverse + np.sum(g_reverse * coefficients_reverse * h_reverse, axis=1)
+    active_noise_bob = _active_noise(
+        h_forward,
+        coefficients_forward,
+        active_mask,
+        amplifier_noise_variance,
         rng,
-        samples,
-        variance=receiver_noise_variance_forward,
     )
-    receiver_reverse = complex_normal(
+    active_noise_alice = _active_noise(
+        g_reverse,
+        coefficients_reverse,
+        active_mask,
+        amplifier_noise_variance,
         rng,
-        samples,
-        variance=receiver_noise_variance_reverse,
+    )
+    observation_bob = (
+        np.sqrt(pilot_power_controller) * effective_forward
+        + active_noise_bob
+        + _receiver_noise(samples, receiver_noise_variance_bob, rng)
+    )
+    observation_alice = (
+        np.sqrt(pilot_power_user) * effective_reverse
+        + active_noise_alice
+        + _receiver_noise(samples, receiver_noise_variance_alice, rng)
     )
 
-    estimation_scale_forward = np.sqrt(
-        max(pilot_power_forward * pilot_symbols_forward, 1.0e-12)
+    direct_eve_f = evolve_block(np.asarray(direct_controller_eve), samples, within, rng).reshape(-1)
+    direct_eve_r = evolve_block(np.asarray(direct_user_eve), samples, within, rng).reshape(-1)
+    eve_effective_forward = direct_eve_f + np.sum(e_forward * coefficients_forward * g_forward, axis=1)
+    eve_effective_reverse = direct_eve_r + np.sum(e_reverse * coefficients_reverse * h_reverse, axis=1)
+    active_noise_eve_f = _active_noise(
+        e_forward,
+        coefficients_forward,
+        active_mask,
+        amplifier_noise_variance,
+        rng,
     )
-    estimation_scale_reverse = np.sqrt(
-        max(pilot_power_reverse * pilot_symbols_reverse, 1.0e-12)
+    active_noise_eve_r = _active_noise(
+        e_reverse,
+        coefficients_reverse,
+        active_mask,
+        amplifier_noise_variance,
+        rng,
     )
-
-    observation_forward = (
-        effective_forward
-        + forwarded_forward / estimation_scale_forward
-        + receiver_forward / estimation_scale_forward
+    observation_eve_forward = (
+        np.sqrt(pilot_power_controller) * eve_effective_forward
+        + active_noise_eve_f
+        + _receiver_noise(samples, receiver_noise_variance_eve, rng)
     )
-    observation_reverse = (
-        effective_reverse
-        + forwarded_reverse / estimation_scale_reverse
-        + receiver_reverse / estimation_scale_reverse
+    observation_eve_reverse = (
+        np.sqrt(pilot_power_user) * eve_effective_reverse
+        + active_noise_eve_r
+        + _receiver_noise(samples, receiver_noise_variance_eve, rng)
     )
-
-    return BranchProbingResult(
-        observation_forward=np.asarray(
-            observation_forward,
-            dtype=np.complex128,
-        ),
-        observation_reverse=np.asarray(
-            observation_reverse,
-            dtype=np.complex128,
-        ),
-        effective_channel_forward=np.asarray(
-            effective_forward,
-            dtype=np.complex128,
-        ),
-        effective_channel_reverse=np.asarray(
-            effective_reverse,
-            dtype=np.complex128,
-        ),
-        forwarded_active_noise_forward=np.asarray(
-            forwarded_forward,
-            dtype=np.complex128,
-        ),
-        forwarded_active_noise_reverse=np.asarray(
-            forwarded_reverse,
-            dtype=np.complex128,
-        ),
-        active_noise_forward=np.asarray(
-            active_noise_forward,
-            dtype=np.complex128,
-        ),
-        active_noise_reverse=np.asarray(
-            active_noise_reverse,
-            dtype=np.complex128,
-        ),
+    return BranchObservations(
+        observation_alice=np.asarray(observation_alice, dtype=np.complex128),
+        observation_bob=np.asarray(observation_bob, dtype=np.complex128),
+        observation_eve_forward=np.asarray(observation_eve_forward, dtype=np.complex128),
+        observation_eve_reverse=np.asarray(observation_eve_reverse, dtype=np.complex128),
+        effective_forward=np.asarray(effective_forward, dtype=np.complex128),
+        effective_reverse=np.asarray(effective_reverse, dtype=np.complex128),
     )
 
 
 def simulate_dual_side_probing(
-    block: BidirectionalChannelBlock,
-    surface: ActualSurfaceCoefficients,
+    channels: StaticChannels,
+    coefficients: DirectionalSurfaceCoefficients,
     active_mask: np.ndarray,
-    endpoint: EndpointRFRealization,
-    config: ProbingConfig,
+    channel_config: ChannelConfig,
+    probing: ProbingConfig,
     rng: np.random.Generator,
-    *,
-    amplifier_noise_scale: float = 1.0,
-    receiver_noise_scale: float = 1.0,
-) -> DualProbingResult:
-    config.validate()
-
-    transmission = _simulate_branch(
-        block.controller_to_ris_forward,
-        block.ris_to_transmission_forward,
-        block.transmission_to_ris_reverse,
-        block.ris_to_controller_reverse,
-        block.direct_transmission_forward,
-        block.direct_transmission_reverse,
-        surface.transmission_forward,
-        surface.transmission_reverse,
-        active_mask,
-        pilot_power_forward=config.pilot_power_controller,
-        pilot_power_reverse=config.pilot_power_transmission_user,
-        pilot_symbols_forward=config.pilot_symbols_controller,
-        pilot_symbols_reverse=config.pilot_symbols_transmission_user,
-        amplifier_noise_variance=(
-            config.input_referred_amplifier_noise_variance
-            * amplifier_noise_scale
-        ),
-        receiver_noise_variance_forward=(
-            config.receiver_noise_variance_transmission_user
-            * receiver_noise_scale
-        ),
-        receiver_noise_variance_reverse=(
-            config.receiver_noise_variance_controller
-            * receiver_noise_scale
-        ),
-        tx_coefficient_forward=endpoint.controller_tx,
-        rx_coefficient_forward=endpoint.transmission_rx,
-        tx_coefficient_reverse=endpoint.transmission_tx,
-        rx_coefficient_reverse=endpoint.controller_rx,
+) -> tuple[BranchObservations, BranchObservations]:
+    transmission = simulate_branch(
+        controller_ris=channels.controller_ris,
+        ris_user=channels.ris_transmission,
+        ris_eve=channels.ris_eve_transmission,
+        direct_legitimate=channels.direct_transmission,
+        direct_controller_eve=channels.direct_controller_eve_transmission,
+        direct_user_eve=channels.direct_user_eve_transmission,
+        coefficients_forward=coefficients.transmission_forward,
+        coefficients_reverse=coefficients.transmission_reverse,
+        active_mask=active_mask,
+        pilot_power_controller=probing.pilot_power_controller,
+        pilot_power_user=probing.pilot_power_transmission_user,
+        receiver_noise_variance_alice=probing.receiver_noise_variance_controller,
+        receiver_noise_variance_bob=probing.receiver_noise_variance_transmission_user,
+        receiver_noise_variance_eve=probing.receiver_noise_variance_eve,
+        amplifier_noise_variance=probing.input_referred_amplifier_noise_variance,
+        channel_config=channel_config,
+        probing_config=probing,
         rng=rng,
     )
-
-    reflection = _simulate_branch(
-        block.controller_to_ris_forward,
-        block.ris_to_reflection_forward,
-        block.reflection_to_ris_reverse,
-        block.ris_to_controller_reverse,
-        block.direct_reflection_forward,
-        block.direct_reflection_reverse,
-        surface.reflection_forward,
-        surface.reflection_reverse,
-        active_mask,
-        pilot_power_forward=config.pilot_power_controller,
-        pilot_power_reverse=config.pilot_power_reflection_user,
-        pilot_symbols_forward=config.pilot_symbols_controller,
-        pilot_symbols_reverse=config.pilot_symbols_reflection_user,
-        amplifier_noise_variance=(
-            config.input_referred_amplifier_noise_variance
-            * amplifier_noise_scale
-        ),
-        receiver_noise_variance_forward=(
-            config.receiver_noise_variance_reflection_user
-            * receiver_noise_scale
-        ),
-        receiver_noise_variance_reverse=(
-            config.receiver_noise_variance_controller
-            * receiver_noise_scale
-        ),
-        tx_coefficient_forward=endpoint.controller_tx,
-        rx_coefficient_forward=endpoint.reflection_rx,
-        tx_coefficient_reverse=endpoint.reflection_tx,
-        rx_coefficient_reverse=endpoint.controller_rx,
+    reflection = simulate_branch(
+        controller_ris=channels.controller_ris,
+        ris_user=channels.ris_reflection,
+        ris_eve=channels.ris_eve_reflection,
+        direct_legitimate=channels.direct_reflection,
+        direct_controller_eve=channels.direct_controller_eve_reflection,
+        direct_user_eve=channels.direct_user_eve_reflection,
+        coefficients_forward=coefficients.reflection_forward,
+        coefficients_reverse=coefficients.reflection_reverse,
+        active_mask=active_mask,
+        pilot_power_controller=probing.pilot_power_controller,
+        pilot_power_user=probing.pilot_power_reflection_user,
+        receiver_noise_variance_alice=probing.receiver_noise_variance_controller,
+        receiver_noise_variance_bob=probing.receiver_noise_variance_reflection_user,
+        receiver_noise_variance_eve=probing.receiver_noise_variance_eve,
+        amplifier_noise_variance=probing.input_referred_amplifier_noise_variance,
+        channel_config=channel_config,
+        probing_config=probing,
         rng=rng,
     )
-
-    return DualProbingResult(
-        transmission=transmission,
-        reflection=reflection,
-    )
+    return transmission, reflection

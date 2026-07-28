@@ -38,6 +38,7 @@ src/active_star_ris/full_scheme_v2/models.py
 src/active_star_ris/full_scheme_v2/objective.py
 src/active_star_ris/full_scheme_v2/power.py
 src/active_star_ris/full_scheme_v2/probing.py
+src/active_star_ris/full_scheme_v2/security.py
 src/active_star_ris/full_scheme_v2/td3.py
 src/active_star_ris_complete_baseline.egg-info/PKG-INFO
 src/active_star_ris_complete_baseline.egg-info/SOURCES.txt

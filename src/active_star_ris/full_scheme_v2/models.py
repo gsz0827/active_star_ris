@@ -5,183 +5,159 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-
-FloatArray = NDArray[np.float64]
 ComplexArray = NDArray[np.complex128]
+FloatArray = NDArray[np.float64]
 BoolArray = NDArray[np.bool_]
-BitArray = NDArray[np.uint8]
+IntArray = NDArray[np.int64]
 
 
 @dataclass(frozen=True)
-class ChannelSnapshot:
-    controller_to_ris: ComplexArray
-    ris_to_transmission: ComplexArray
-    ris_to_reflection: ComplexArray
+class StaticChannels:
+    controller_ris: ComplexArray
+    ris_transmission: ComplexArray
+    ris_reflection: ComplexArray
+    ris_eve_transmission: ComplexArray
+    ris_eve_reflection: ComplexArray
     direct_transmission: complex
     direct_reflection: complex
+    direct_controller_eve_transmission: complex
+    direct_user_eve_transmission: complex
+    direct_controller_eve_reflection: complex
+    direct_user_eve_reflection: complex
 
 
 @dataclass(frozen=True)
-class BidirectionalChannelBlock:
-    controller_to_ris_forward: ComplexArray
-    ris_to_transmission_forward: ComplexArray
-    ris_to_reflection_forward: ComplexArray
-    direct_transmission_forward: ComplexArray
-    direct_reflection_forward: ComplexArray
-
-    transmission_to_ris_reverse: ComplexArray
-    reflection_to_ris_reverse: ComplexArray
-    ris_to_controller_reverse: ComplexArray
-    direct_transmission_reverse: ComplexArray
-    direct_reflection_reverse: ComplexArray
+class CSIResult:
+    estimate: ComplexArray
+    error_standard_deviation: FloatArray
+    pilot_symbols: int
 
 
 @dataclass(frozen=True)
-class IdealSurfaceCommand:
+class CSIState:
+    controller_ris: CSIResult
+    ris_transmission: CSIResult
+    ris_reflection: CSIResult
+    direct_transmission: CSIResult
+    direct_reflection: CSIResult
+
+
+@dataclass(frozen=True)
+class IdealSurfaceAction:
     gain: FloatArray
-    beta_transmission: FloatArray
     phase_transmission: FloatArray
     phase_reflection: FloatArray
+    transmission_split: FloatArray
     active_mask: BoolArray
 
 
 @dataclass(frozen=True)
-class ActualSurfaceCoefficients:
-    gain_forward: FloatArray
-    gain_reverse: FloatArray
-    beta_transmission: FloatArray
-    beta_reflection: FloatArray
+class StaticHardwareState:
+    common_gain_error_db: FloatArray
+    forward_gain_error_db: FloatArray
+    reverse_gain_error_db: FloatArray
+    transmission_static_phase_error: FloatArray
+    reflection_static_phase_error: FloatArray
+    forward_directional_phase_error: FloatArray
+    reverse_directional_phase_error: FloatArray
 
+
+@dataclass(frozen=True)
+class DirectionalSurfaceCoefficients:
     transmission_forward: ComplexArray
-    reflection_forward: ComplexArray
     transmission_reverse: ComplexArray
+    reflection_forward: ComplexArray
     reflection_reverse: ComplexArray
+    actual_gain_forward: FloatArray
+    actual_gain_reverse: FloatArray
+    actual_transmission_split: FloatArray
 
 
 @dataclass(frozen=True)
-class EndpointRFRealization:
-    controller_tx: complex
-    controller_rx: complex
-    transmission_tx: complex
-    transmission_rx: complex
-    reflection_tx: complex
-    reflection_rx: complex
+class GainProjectionResult:
+    projected_gain: FloatArray
+    robust_rf_output_controller: float
+    robust_rf_output_transmission: float
+    robust_rf_output_reflection: float
+    robust_total_dc_power: float
+    unit_gain_feasible: bool
+    projection_scale: float
 
 
 @dataclass(frozen=True)
-class HardwareStaticRealization:
-    gain_error_common_db: FloatArray
-    gain_error_forward_db: FloatArray
-    gain_error_reverse_db: FloatArray
-
-    phase_error_transmission_common: FloatArray
-    phase_error_reflection_common: FloatArray
-    phase_error_forward: FloatArray
-    phase_error_reverse: FloatArray
-
-    beta_error: FloatArray
-    endpoint_rf: EndpointRFRealization
+class BranchObservations:
+    observation_alice: ComplexArray
+    observation_bob: ComplexArray
+    observation_eve_forward: ComplexArray
+    observation_eve_reverse: ComplexArray
+    effective_forward: ComplexArray
+    effective_reverse: ComplexArray
 
 
 @dataclass(frozen=True)
-class BranchProbingResult:
-    observation_forward: ComplexArray
-    observation_reverse: ComplexArray
-
-    effective_channel_forward: ComplexArray
-    effective_channel_reverse: ComplexArray
-
-    forwarded_active_noise_forward: ComplexArray
-    forwarded_active_noise_reverse: ComplexArray
-
-    # 新增：每个样本、每个单元的内部噪声
-    active_noise_forward: ComplexArray
-    active_noise_reverse: ComplexArray
-
-
-@dataclass(frozen=True)
-class DualProbingResult:
-    transmission: BranchProbingResult
-    reflection: BranchProbingResult
+class BranchKeyMetrics:
+    mutual_information_ab: float
+    eve_information: float
+    reciprocity: float
+    raw_kdr: float
+    retained_bits: int
+    post_reconciliation_kdr: float
+    public_leakage_bits: int
+    finite_length_secret_bits: int
+    final_key_bits: int
+    final_keys_match: bool
+    secure_key_rate_bps: float
 
 
 @dataclass(frozen=True)
-class PowerResult:
+class JointKeyMetrics:
+    transmission: BranchKeyMetrics
+    reflection: BranchKeyMetrics
+    weighted_secure_key_rate_bps: float
+    weighted_raw_kdr: float
+    weighted_post_reconciliation_kdr: float
+    weighted_reciprocity: float
+
+
+@dataclass(frozen=True)
+class PowerMetrics:
     rf_output_controller: float
     rf_output_transmission: float
     rf_output_reflection: float
-    maximum_rf_output: float
-    average_rf_output: float
-
-    additional_rf_power_average: float
-    amplifier_dc_power: float
-    total_surface_dc_power: float
-
+    total_dc_power: float
     rf_violation: float
     dc_violation: float
-    per_element_saturation_violation: float
-
-    rf_feasible: bool
-    dc_feasible: bool
-    saturation_feasible: bool
-    fully_feasible: bool
+    any_violation: bool
 
 
 @dataclass(frozen=True)
-class KeyRateResult:
-    total_samples: int
-    retained_samples: int
-    retention_ratio: float
-
-    raw_kdr: float
-    post_reconciliation_kdr: float
-
-    estimated_entropy_bits: int
-
-    # 从边际熵中扣除的Eve信息泄漏比特数
-    eve_leakage_bits: int
-
-    reconciliation_leakage_bits: int
-    verification_leakage_bits: int
-    public_communication_bits: int
-
-    training_secret_bits: int
-    final_key_bits: int
-    frame_duration_seconds: float
-    training_key_rate_bps: float
-    final_key_rate_bps: float
-
-    verification_passed: bool
-    success: bool
-
-
-@dataclass(frozen=True)
-class ObjectiveResult:
+class ObjectiveSample:
     reward: float
+    key_metrics: JointKeyMetrics
+    power_metrics: PowerMetrics
+    active_elements: int
+    projection_scale: float
+    architecture_feasible: bool
 
-    theoretical_mutual_information_bits_per_sample: float
-    training_key_rate_bps: float
-    final_key_rate_bps: float
 
-    raw_kdr: float
-    post_reconciliation_kdr: float
-    reciprocity: float
-    retention_ratio: float
-    success_rate: float
-
-    normalized_key_rate: float
-    normalized_kdr: float
-    normalized_power: float
-    normalized_constraint_violation: float
-
-    transmission_key: KeyRateResult
-    reflection_key: KeyRateResult
-    power: PowerResult
-    probing: DualProbingResult
-
-    system_training_key_rate_bps: float
-    system_final_key_rate_bps: float
-
-    transmission_eve_leakage_bits_per_sample: float
-    reflection_eve_leakage_bits_per_sample: float
-    eve_leakage_bits_per_sample: float
+@dataclass(frozen=True)
+class RobustSummary:
+    robust_reward: float
+    mean_reward: float
+    cvar_reward: float
+    worst_reward: float
+    mean_secure_key_rate_bps: float
+    cvar_secure_key_rate_bps: float
+    worst_secure_key_rate_bps: float
+    mean_raw_kdr: float
+    cvar_raw_kdr: float
+    worst_raw_kdr: float
+    mean_reciprocity: float
+    cvar_reciprocity: float
+    worst_reciprocity: float
+    mean_surface_power_watt: float
+    cvar_surface_power_watt: float
+    worst_surface_power_watt: float
+    power_violation_probability: float
+    mean_active_elements: float
+    mean_projection_scale: float

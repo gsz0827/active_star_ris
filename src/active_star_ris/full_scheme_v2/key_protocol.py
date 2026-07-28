@@ -1,507 +1,299 @@
 from __future__ import annotations
 
-from hashlib import blake2s
-from math import ceil, floor, log2
+import hashlib
+import math
 
 import numpy as np
 
-from .config import KeyGenerationConfig, ProbingConfig
-from .models import BitArray, KeyRateResult
+from .config import KeyGenerationConfig, ObjectiveConfig, ProbingConfig
+from .models import BranchKeyMetrics, BranchObservations, JointKeyMetrics
 
 
-def _extract_feature(values: np.ndarray, feature: str) -> np.ndarray:
-    data = np.asarray(values, dtype=np.complex128).reshape(-1)
-    if feature == "real":
-        result = data.real
-    elif feature == "imag":
-        result = data.imag
-    elif feature == "magnitude":
-        result = np.abs(data)
-    elif feature == "phase":
-        result = np.angle(data)
-    else:
-        raise ValueError("unsupported feature")
-    return np.asarray(result, dtype=np.float64)
-
-
-def _binary_entropy(probability: float) -> float:
+def binary_entropy(probability: float) -> float:
     p = float(np.clip(probability, 0.0, 1.0))
     if p <= 0.0 or p >= 1.0:
         return 0.0
-    return float(-p * log2(p) - (1.0 - p) * log2(1.0 - p))
+    return float(-p * np.log2(p) - (1.0 - p) * np.log2(1.0 - p))
 
 
-def _empirical_min_entropy_rate(
-    bits: BitArray,
-) -> float:
-    """估计二进制序列的每比特边际最小熵。
-
-    H_min(X) = -log2(max(P(X=0), P(X=1)))
-    """
-    values = np.asarray(
-        bits,
-        dtype=np.uint8,
-    ).reshape(-1)
-
-    if values.size == 0:
-        return 0.0
-
-    probability_one = float(
-        np.mean(values)
-    )
-    probability_zero = 1.0 - probability_one
-
-    maximum_probability = max(
-        probability_zero,
-        probability_one,
-    )
-
-    if maximum_probability <= 0.0:
-        return 0.0
-
-    return float(
-        np.clip(
-            -log2(maximum_probability),
-            0.0,
-            1.0,
-        )
-    )
+def feature(values: np.ndarray, name: str) -> np.ndarray:
+    if name == "real":
+        return np.real(values)
+    if name == "imag":
+        return np.imag(values)
+    if name == "magnitude":
+        return np.abs(values)
+    if name == "phase":
+        return np.angle(values)
+    raise ValueError(f"unsupported feature: {name}")
 
 
-def quantize_with_guard_band(
-    observation_a: np.ndarray,
-    observation_b: np.ndarray,
+def standardize(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    centered = values - np.mean(values)
+    scale = float(np.std(centered))
+    if scale <= 1.0e-12:
+        return np.zeros_like(centered)
+    return centered / scale
+
+
+def complex_correlation(a: np.ndarray, b: np.ndarray) -> complex:
+    x = np.asarray(a, dtype=np.complex128).reshape(-1)
+    y = np.asarray(b, dtype=np.complex128).reshape(-1)
+    if x.size != y.size or x.size < 2:
+        return 0.0j
+    x = x - np.mean(x)
+    y = y - np.mean(y)
+    denominator = np.sqrt(np.sum(np.abs(x) ** 2) * np.sum(np.abs(y) ** 2))
+    if denominator <= 1.0e-30:
+        return 0.0j
+    return complex(np.sum(x * np.conj(y)) / denominator)
+
+
+def gaussian_mutual_information(a: np.ndarray, b: np.ndarray) -> float:
+    rho_squared = min(abs(complex_correlation(a, b)) ** 2, 1.0 - 1.0e-12)
+    return float(max(0.0, -np.log2(1.0 - rho_squared)))
+
+
+def quantize_guard_band(
+    alice_observation: np.ndarray,
+    bob_observation: np.ndarray,
     config: KeyGenerationConfig,
-) -> tuple[BitArray, BitArray, int, int, float]:
-    a = _extract_feature(observation_a, config.feature)
-    b = _extract_feature(observation_b, config.feature)
-    if a.size != b.size or a.size < 2:
-        raise ValueError("observations must have equal length >= 2")
-
-    threshold = float(np.median(a))
-    scale = float(np.std(a, ddof=1))
-    if not np.isfinite(scale) or scale <= np.finfo(np.float64).eps:
-        return (
-            np.empty(0, dtype=np.uint8),
-            np.empty(0, dtype=np.uint8),
-            0,
-            0,
-            1.0,
-        )
-
-    guard = config.guard_band_sigma * scale
-    reliable_a = np.abs(a - threshold) > guard
-    reliable_b = np.abs(b - threshold) > guard
-
-    if config.selection_policy == "alice":
-        retained = reliable_a
-        disclosure_bits = int(a.size)
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    alice = standardize(feature(alice_observation, config.feature))
+    bob = standardize(feature(bob_observation, config.feature))
+    alice_keep = np.abs(alice) >= config.guard_band_sigma
+    if config.selection_policy == "intersection":
+        keep = alice_keep & (np.abs(bob) >= config.guard_band_sigma)
     else:
-        retained = np.logical_and(reliable_a, reliable_b)
-        disclosure_bits = int(2 * a.size)
+        keep = alice_keep
+    alice_bits = (alice[keep] >= 0.0).astype(np.uint8)
+    bob_bits = (bob[keep] >= 0.0).astype(np.uint8)
+    return alice_bits, bob_bits, keep
 
-    indices = np.flatnonzero(retained)
+
+def _parity(bits: np.ndarray, indices: np.ndarray) -> int:
     if indices.size == 0:
-        return (
-            np.empty(0, dtype=np.uint8),
-            np.empty(0, dtype=np.uint8),
-            disclosure_bits,
-            0,
-            1.0,
-        )
-
-    bits_a = (a[indices] > threshold).astype(np.uint8)
-    bits_b = (b[indices] > threshold).astype(np.uint8)
-    raw_kdr = float(np.mean(bits_a != bits_b))
-    return bits_a, bits_b, disclosure_bits, int(indices.size), raw_kdr
-
-
-def _parity(bits: BitArray, indices: np.ndarray) -> int:
-    return int(np.sum(bits[indices], dtype=np.int64) % 2)
-
-
-def _verification_tag(bits: BitArray, tag_length_bits: int) -> BitArray:
-    packed = np.packbits(bits, bitorder="big").tobytes()
-    prefix = int(bits.size).to_bytes(8, byteorder="big", signed=False)
-    digest = blake2s(prefix + packed, digest_size=32).digest()
-    digest_bits = np.unpackbits(
-        np.frombuffer(digest, dtype=np.uint8),
-        bitorder="big",
-    )
-    return np.asarray(digest_bits[:tag_length_bits], dtype=np.uint8)
+        return 0
+    return int(np.bitwise_xor.reduce(bits[indices]))
 
 
 def cascade_reconcile(
-    bits_a: BitArray,
-    bits_b: BitArray,
+    alice_bits: np.ndarray,
+    bob_bits: np.ndarray,
     config: KeyGenerationConfig,
     rng: np.random.Generator,
-) -> tuple[BitArray, int, float, bool]:
-    a = np.asarray(bits_a, dtype=np.uint8).reshape(-1)
-    before = np.asarray(bits_b, dtype=np.uint8).reshape(-1)
-    if a.size != before.size:
-        raise ValueError("raw key sizes differ")
-    if a.size < 2:
-        return before.copy(), 0, 1.0, False
-
-    corrected = before.copy()
+) -> tuple[np.ndarray, int]:
+    alice = np.asarray(alice_bits, dtype=np.uint8).copy()
+    bob = np.asarray(bob_bits, dtype=np.uint8).copy()
+    if alice.size != bob.size:
+        raise ValueError("Alice and Bob bit arrays must have equal length")
     leakage = 0
-
+    if alice.size == 0:
+        return bob, leakage
     for pass_index in range(config.reconciliation_passes):
+        permutation = rng.permutation(alice.size)
         block_size = min(
-            a.size,
-            config.initial_block_size
-            * 2 ** min(pass_index, config.maximum_block_doublings),
+            alice.size,
+            config.initial_block_size * (2 ** min(pass_index, config.maximum_block_doublings)),
         )
-        permutation = rng.permutation(a.size).astype(np.int64)
-
-        for start in range(0, a.size, block_size):
+        for start in range(0, alice.size, block_size):
             block = permutation[start : start + block_size]
             leakage += 1
-            if _parity(a, block) == _parity(corrected, block):
+            if _parity(alice, block) == _parity(bob, block):
                 continue
-
-            search = block
-            while search.size > 1:
-                middle = search.size // 2
-                left = search[:middle]
-                right = search[middle:]
+            candidate = block.copy()
+            while candidate.size > 1:
+                midpoint = candidate.size // 2
+                left = candidate[:midpoint]
+                right = candidate[midpoint:]
                 leakage += 1
-                if _parity(a, left) != _parity(corrected, left):
-                    search = left
+                if _parity(alice, left) != _parity(bob, left):
+                    candidate = left
                 else:
-                    search = right
-            corrected[int(search[0])] ^= np.uint8(1)
-
-    post_kdr = float(np.mean(a != corrected))
-    tag_a = _verification_tag(a, config.verification_tag_bits)
-    tag_b = _verification_tag(corrected, config.verification_tag_bits)
-    verified = bool(np.array_equal(tag_a, tag_b))
-    return corrected, int(leakage), post_kdr, verified
+                    candidate = right
+            if candidate.size == 1:
+                bob[candidate[0]] ^= 1
+        if np.array_equal(alice, bob):
+            break
+    return bob, leakage
 
 
-def toeplitz_hash(
-    bits: BitArray,
-    output_length: int,
-    rng: np.random.Generator,
-) -> tuple[BitArray, BitArray]:
+def _bits_to_bytes(bits: np.ndarray) -> bytes:
+    packed = np.packbits(np.asarray(bits, dtype=np.uint8), bitorder="big")
+    return packed.tobytes()
+
+
+def verification_passed(alice_bits: np.ndarray, bob_bits: np.ndarray, tag_bits: int) -> bool:
+    bytes_needed = math.ceil(tag_bits / 8)
+    alice_digest = hashlib.sha256(_bits_to_bytes(alice_bits)).digest()[:bytes_needed]
+    bob_digest = hashlib.sha256(_bits_to_bytes(bob_bits)).digest()[:bytes_needed]
+    if tag_bits % 8:
+        mask = 0xFF << (8 - tag_bits % 8) & 0xFF
+        alice_digest = alice_digest[:-1] + bytes([alice_digest[-1] & mask])
+        bob_digest = bob_digest[:-1] + bytes([bob_digest[-1] & mask])
+    return alice_digest == bob_digest
+
+
+def toeplitz_hash(bits: np.ndarray, output_bits: int, seed: np.ndarray) -> np.ndarray:
     source = np.asarray(bits, dtype=np.uint8).reshape(-1)
-    if not 1 <= output_length <= source.size:
-        raise ValueError("invalid Toeplitz output length")
-
-    seed_length = source.size + output_length - 1
-    seed = rng.integers(0, 2, size=seed_length, dtype=np.uint8)
-    result = np.zeros(output_length, dtype=np.uint8)
-    positions = np.arange(source.size, dtype=np.int64)
-
-    for row in range(output_length):
-        seed_indices = row - positions + source.size - 1
-        result[row] = np.uint8(
-            np.sum(source * seed[seed_indices], dtype=np.int64) % 2
-        )
-    return result, seed
+    if output_bits <= 0:
+        return np.zeros(0, dtype=np.uint8)
+    expected = source.size + output_bits - 1
+    seed = np.asarray(seed, dtype=np.uint8).reshape(-1)
+    if seed.size != expected:
+        raise ValueError("invalid Toeplitz seed length")
+    output = np.empty(output_bits, dtype=np.uint8)
+    for row in range(output_bits):
+        indices = row + np.arange(source.size - 1, -1, -1)
+        output[row] = np.bitwise_xor.reduce(source & seed[indices])
+    return output
 
 
-def _frame_duration(
-    total_samples: int,
-    public_bits: int,
-    probing: ProbingConfig,
-    key: KeyGenerationConfig,
-    reverse_pilot_symbols: int,
-) -> float:
-    if reverse_pilot_symbols < 1:
-        raise ValueError(
-            "reverse_pilot_symbols must be positive"
-        )
-
-    # 一次双向信道观测：
-    #
-    # Controller -> user:
-    #     L_controller 个 pilot symbols
-    #
-    # user -> Controller:
-    #     L_user 个 pilot symbols
-    #
-    # 中间再加 forward/reverse guard。
-    symbols_per_sample = (
+def probing_duration_seconds(probing: ProbingConfig) -> float:
+    per_sample_symbols = (
         probing.pilot_symbols_controller
-        + reverse_pilot_symbols
+        + probing.pilot_symbols_transmission_user
+        + probing.pilot_symbols_reflection_user
     )
-
-    probing_time = total_samples * (
-        symbols_per_sample
-        * probing.pilot_symbol_duration_seconds
-        + probing.forward_reverse_guard_seconds
-    )
-
-    public_time = (
-        public_bits / key.public_channel_rate_bps
-    )
-
-    return max(
-        probing_time
+    return float(
+        probing.samples_per_step * per_sample_symbols * probing.pilot_symbol_duration_seconds
+        + 2.0 * probing.samples_per_step * probing.forward_reverse_guard_seconds
         + probing.branch_switch_guard_seconds
-        + public_time
-        + key.fixed_processing_delay_seconds,
-        1.0e-12,
     )
 
 
-def evaluate_key_rate(
-    observation_a: np.ndarray,
-    observation_b: np.ndarray,
-    *,
+def evaluate_branch_key_metrics(
+    observations: BranchObservations,
     key_config: KeyGenerationConfig,
-    probing_config: ProbingConfig,
+    probing: ProbingConfig,
     rng: np.random.Generator,
+    *,
     full_protocol: bool,
-    reverse_pilot_symbols: int | None = None,
-
-    # Eve对每个保留原始比特的信息泄漏代理
-    eve_leakage_bits_per_retained_bit: float = 0.0,
-
-    # 可选：由外部有限长度安全模块给出的
-    # H_min(K_A | Z_E)下界。
-    # 一旦传入，该值已经包含Eve条件信息，
-    # 因此不得再次扣除eve_leakage。
-    conditional_min_entropy_bits: int | None = None,
-) -> KeyRateResult:
-    key_config.validate()
-    if eve_leakage_bits_per_retained_bit < 0.0:
-        raise ValueError(
-            "eve_leakage_bits_per_retained_bit "
-            "cannot be negative"
-        )
-
-    if (
-        conditional_min_entropy_bits is not None
-        and conditional_min_entropy_bits < 0
-    ):
-        raise ValueError(
-            "conditional_min_entropy_bits "
-            "cannot be negative"
-        )
-    if reverse_pilot_symbols is None:
-        reverse_pilot_symbols = (
-            probing_config.pilot_symbols_controller
-        )
-
-    if reverse_pilot_symbols < 1:
-        raise ValueError(
-            "reverse_pilot_symbols must be positive"
-        )
-    total_samples = int(np.asarray(observation_a).reshape(-1).size)
-
-    bits_a, bits_b, selection_bits, retained, raw_kdr = quantize_with_guard_band(
-        observation_a,
-        observation_b,
+) -> BranchKeyMetrics:
+    alice_bits, bob_bits, keep = quantize_guard_band(
+        observations.observation_alice,
+        observations.observation_bob,
         key_config,
     )
-
-    if retained < 2:
-        duration = _frame_duration(
-            total_samples,
-            selection_bits,
-            probing_config,
-            key_config,
-            reverse_pilot_symbols,
-        )
-        return KeyRateResult(
-            total_samples=total_samples,
-            retained_samples=retained,
-            retention_ratio=retained / max(total_samples, 1),
-            raw_kdr=1.0,
-            post_reconciliation_kdr=1.0,
-            estimated_entropy_bits=0,
-            eve_leakage_bits=0,
-            reconciliation_leakage_bits=0,
-            verification_leakage_bits=0,
-            public_communication_bits=selection_bits,
-            training_secret_bits=0,
-            final_key_bits=0,
-            frame_duration_seconds=duration,
-            training_key_rate_bps=0.0,
-            final_key_rate_bps=0.0,
-            verification_passed=False,
-            success=False,
-        )
-
-    bounded_eve_leakage_rate = float(
-        np.clip(
-            eve_leakage_bits_per_retained_bit,
-            0.0,
-            1.0,
-        )
+    retained = int(alice_bits.size)
+    raw_kdr = float(np.mean(alice_bits != bob_bits)) if retained else 1.0
+    mi_ab = gaussian_mutual_information(
+        observations.observation_alice,
+        observations.observation_bob,
     )
-
-    eve_leakage_bits = int(
-        ceil(
-            retained
-            * bounded_eve_leakage_rate
-        )
+    eve_information = max(
+        gaussian_mutual_information(observations.observation_alice, observations.observation_eve_forward),
+        gaussian_mutual_information(observations.observation_alice, observations.observation_eve_reverse),
+        gaussian_mutual_information(observations.observation_bob, observations.observation_eve_forward),
+        gaussian_mutual_information(observations.observation_bob, observations.observation_eve_reverse),
     )
-
-    if full_protocol:
-        if conditional_min_entropy_bits is not None:
-            # 外部输入已经是H_min(K_A | Z_E)，
-            # 不再重复扣除Eve泄漏。
-            entropy_bits = int(
-                np.clip(
-                    conditional_min_entropy_bits,
-                    0,
-                    retained,
-                )
-            )
-        else:
-            # 当前的过渡性最终评估代理：
-            # 先根据实际原始比特偏置估计边际最小熵，
-            # 再扣除Eve互信息代理。
-            #
-            # 注意：这不是严格的平滑条件最小熵证明。
-            empirical_entropy_rate = (
-                _empirical_min_entropy_rate(
-                    bits_a
-                )
-            )
-
-            marginal_entropy_bits = int(
-                floor(
-                    retained
-                    * empirical_entropy_rate
-                )
-            )
-
-            entropy_bits = max(
-                0,
-                marginal_entropy_bits
-                - eve_leakage_bits,
-            )
-    else:
-        # 训练阶段才允许使用固定0.8熵率代理。
-        training_marginal_entropy_bits = int(
-            floor(
-                retained
-                * key_config
-                .minimum_entropy_bits_per_retained_bit
-            )
+    reciprocity = float(np.clip(abs(complex_correlation(
+        observations.observation_alice,
+        observations.observation_bob,
+    )), 0.0, 1.0))
+    reconciliation_leakage_bound = int(
+        math.ceil(key_config.reconciliation_efficiency * retained * binary_entropy(raw_kdr))
+    )
+    eve_leakage_bound = int(math.ceil(retained * min(1.0, eve_information)))
+    finite_penalty = int(
+        math.ceil(np.sqrt(max(retained, 1) * np.log2(2.0 / key_config.epsilon_security)))
+    )
+    # 训练阶段使用高斯秘密密钥率下界代理，而不是把合法链路互信息
+    # 直接称为最终KGR。reconciliation_efficiency >= 1 表示协调开销。
+    secret_information_per_retained_sample = max(
+        0.0,
+        mi_ab / key_config.reconciliation_efficiency - eve_information,
+    )
+    secret_bound = max(
+        0,
+        int(math.floor(retained * min(1.0, secret_information_per_retained_sample)))
+        - finite_penalty
+        - key_config.privacy_margin_bits,
+    )
+    # 未执行实际协调时，不伪造“协调后KDR”；训练目标中的协调代价已经
+    # 由秘密密钥率下界吸收。正式评价时会覆盖为实际协议结果。
+    post_kdr = 0.0 if not full_protocol else raw_kdr
+    public_leakage = reconciliation_leakage_bound
+    final_key_bits = 0
+    final_match = False
+    if full_protocol and retained:
+        reconciled_bob, parity_leakage = cascade_reconcile(alice_bits, bob_bits, key_config, rng)
+        post_kdr = float(np.mean(alice_bits != reconciled_bob))
+        verified = verification_passed(
+            alice_bits,
+            reconciled_bob,
+            key_config.verification_tag_bits,
         )
-
-        entropy_bits = max(
-            0,
-            training_marginal_entropy_bits
-            - eve_leakage_bits,
+        public_leakage = parity_leakage + key_config.verification_tag_bits
+        conditional_min_entropy_bound = int(
+            math.floor(retained * max(0.0, 1.0 - min(1.0, eve_information)))
         )
-
-    if full_protocol:
-        corrected_b, parity_leakage, post_kdr, verified = cascade_reconcile(
-            bits_a,
-            bits_b,
-            key_config,
-            rng,
-        )
-        verification_leakage = key_config.verification_tag_bits
-        operational_bound = max(
-            0,
-            entropy_bits
-            - parity_leakage
-            - verification_leakage
-            - key_config.privacy_margin_bits,
-        )
-        final_length = min(
-            operational_bound,
+        final_key_bits = min(
             key_config.maximum_final_key_bits,
-            retained,
-        )
-
-        seed_bits = 0
-        success = bool(verified and final_length > 0)
-        if success:
-            final_a, seed = toeplitz_hash(bits_a, final_length, rng)
-            final_b, _ = _toeplitz_hash_with_seed(corrected_b, final_length, seed)
-            success = bool(np.array_equal(final_a, final_b))
-            if key_config.include_toeplitz_seed_in_public_time:
-                seed_bits = int(seed.size)
-        final_bits = int(final_length if success else 0)
-        training_bits = int(operational_bound)
-        public_bits = int(
-            selection_bits
-            + parity_leakage
-            + verification_leakage
-            + seed_bits
-        )
-    else:
-        estimated_leakage = ceil(
-            key_config.reconciliation_efficiency
-            * retained
-            * _binary_entropy(raw_kdr)
-        )
-        parity_leakage = int(estimated_leakage)
-        verification_leakage = key_config.verification_tag_bits
-        trainable = raw_kdr <= key_config.maximum_trainable_raw_kdr
-        training_bits = (
             max(
                 0,
-                entropy_bits
-                - parity_leakage
-                - verification_leakage
+                conditional_min_entropy_bound
+                - public_leakage
+                - finite_penalty
                 - key_config.privacy_margin_bits,
+            ),
+        )
+        if verified and final_key_bits > 0:
+            seed = rng.integers(
+                0,
+                2,
+                size=retained + final_key_bits - 1,
+                dtype=np.uint8,
             )
-            if trainable
-            else 0
-        )
-        post_kdr = 0.0 if trainable else raw_kdr
-        verified = trainable
-        final_bits = 0
-        success = False
-        public_bits = int(
-            selection_bits + parity_leakage + verification_leakage
-        )
-
-    duration = _frame_duration(
-        total_samples,
-        public_bits,
-        probing_config,
-        key_config,
-        reverse_pilot_symbols,
-    )
-
-    return KeyRateResult(
-        total_samples=total_samples,
-        retained_samples=retained,
-        retention_ratio=retained / total_samples,
-        raw_kdr=float(raw_kdr),
-        post_reconciliation_kdr=float(post_kdr),
-        estimated_entropy_bits=int(entropy_bits),
-        eve_leakage_bits=int(eve_leakage_bits),
-        reconciliation_leakage_bits=int(parity_leakage),
-        verification_leakage_bits=int(verification_leakage),
-        public_communication_bits=int(public_bits),
-        training_secret_bits=int(training_bits),
-        final_key_bits=int(final_bits),
-        frame_duration_seconds=float(duration),
-        training_key_rate_bps=float(training_bits / duration),
-        final_key_rate_bps=float(final_bits / duration),
-        verification_passed=bool(verified),
-        success=bool(success),
+            alice_key = toeplitz_hash(alice_bits, final_key_bits, seed)
+            bob_key = toeplitz_hash(reconciled_bob, final_key_bits, seed)
+            final_match = bool(np.array_equal(alice_key, bob_key))
+            if not final_match:
+                final_key_bits = 0
+        else:
+            final_key_bits = 0
+    secret_bits_for_rate = final_key_bits if full_protocol else secret_bound
+    public_time = public_leakage / key_config.public_channel_rate_bps
+    duration = probing_duration_seconds(probing) + public_time + key_config.fixed_processing_delay_seconds
+    secure_rate = secret_bits_for_rate / max(duration, 1.0e-12)
+    return BranchKeyMetrics(
+        mutual_information_ab=mi_ab,
+        eve_information=eve_information,
+        reciprocity=reciprocity,
+        raw_kdr=raw_kdr,
+        retained_bits=retained,
+        post_reconciliation_kdr=post_kdr,
+        public_leakage_bits=public_leakage,
+        finite_length_secret_bits=secret_bound,
+        final_key_bits=final_key_bits,
+        final_keys_match=final_match,
+        secure_key_rate_bps=float(secure_rate),
     )
 
 
-def _toeplitz_hash_with_seed(
-    bits: BitArray,
-    output_length: int,
-    seed: BitArray,
-) -> tuple[BitArray, BitArray]:
-    source = np.asarray(bits, dtype=np.uint8).reshape(-1)
-    public_seed = np.asarray(seed, dtype=np.uint8).reshape(-1)
-    required = source.size + output_length - 1
-    if public_seed.size != required:
-        raise ValueError("invalid Toeplitz seed length")
-
-    result = np.zeros(output_length, dtype=np.uint8)
-    positions = np.arange(source.size, dtype=np.int64)
-    for row in range(output_length):
-        seed_indices = row - positions + source.size - 1
-        result[row] = np.uint8(
-            np.sum(source * public_seed[seed_indices], dtype=np.int64) % 2
-        )
-    return result, public_seed
+def evaluate_joint_key_metrics(
+    transmission: BranchObservations,
+    reflection: BranchObservations,
+    key_config: KeyGenerationConfig,
+    probing: ProbingConfig,
+    objective: ObjectiveConfig,
+    rng: np.random.Generator,
+    *,
+    full_protocol: bool,
+) -> JointKeyMetrics:
+    t = evaluate_branch_key_metrics(transmission, key_config, probing, rng, full_protocol=full_protocol)
+    r = evaluate_branch_key_metrics(reflection, key_config, probing, rng, full_protocol=full_protocol)
+    total_weight = objective.transmission_weight + objective.reflection_weight
+    wt = objective.transmission_weight / total_weight
+    wr = objective.reflection_weight / total_weight
+    return JointKeyMetrics(
+        transmission=t,
+        reflection=r,
+        weighted_secure_key_rate_bps=wt * t.secure_key_rate_bps + wr * r.secure_key_rate_bps,
+        weighted_raw_kdr=wt * t.raw_kdr + wr * r.raw_kdr,
+        weighted_post_reconciliation_kdr=(
+            wt * t.post_reconciliation_kdr + wr * r.post_reconciliation_kdr
+        ),
+        weighted_reciprocity=wt * t.reciprocity + wr * r.reciprocity,
+    )

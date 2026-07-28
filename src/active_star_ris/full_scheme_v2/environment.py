@@ -1,707 +1,229 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
 
 from .channels import (
-    build_bidirectional_block,
-    estimate_channel,
-    evolve_snapshot,
-    sample_channel_snapshot,
+    advance_static_channels,
+    estimate_control_csi,
+    sample_static_channels,
 )
-from .config import EnvironmentConfig, HardwareConfig
+from .config import FullSchemeConfig
 from .hardware import (
     action_dimension,
-    build_active_mask,
     decode_action,
+    realize_coefficients,
     sample_static_hardware,
 )
-from .models import ChannelSnapshot, HardwareStaticRealization, ObjectiveResult
-from .objective import evaluate_objective
-from .power import conservative_input_powers, project_command_to_power_constraints
+from .key_protocol import evaluate_joint_key_metrics
+from .models import CSIState, ObjectiveSample, RobustSummary, StaticChannels, StaticHardwareState
+from .objective import aggregate_robust_samples, objective_reward
+from .power import actual_power_metrics, project_gains, replace_gain
+from .probing import simulate_dual_side_probing
 
 
-@dataclass(frozen=True)
-class EpisodeDomain:
-    control_csi_nmse_db: float
-    amplifier_noise_scale: float
-    receiver_noise_scale: float
-    hardware_error_scale: float
-    rf_budget: float
-    dc_budget: float
-
-
-class RobustFullSchemeEnvironment:
-    """不依赖Gym的STAR-RIS鲁棒TD3环境。
-
-    reset() -> (state, info)
-    step(action) -> (next_state, reward, terminated, truncated, info)
-    """
-
-    def __init__(
-        self,
-        config: EnvironmentConfig,
-        *,
-        active_mask: np.ndarray | None = None,
-        seed: int | None = None,
-    ) -> None:
+class ActiveStarRisKeyEnvironment:
+    def __init__(self, config: FullSchemeConfig):
         config.validate()
         self.config = config
-        self._rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng(config.environment.seed)
+        self.channels: StaticChannels | None = None
+        self.csi: CSIState | None = None
+        self.hardware: StaticHardwareState | None = None
+        self.step_index = 0
+        self.previous_summary = np.zeros(6, dtype=np.float64)
 
-        if active_mask is None:
-            self.active_mask = build_active_mask(
-                config.channel.num_elements,
-                config.channel.active_ratio,
-            )
-        else:
-            mask = np.asarray(active_mask, dtype=bool).reshape(-1)
-            if mask.size != config.channel.num_elements:
-                raise ValueError("active_mask size mismatch")
-            self.active_mask = mask
+    @property
+    def num_elements(self) -> int:
+        return self.config.geometry.num_elements
 
-        self.action_dim = action_dimension(
-            config.channel.num_elements,
-            self.active_mask,
+    @property
+    def action_dimension(self) -> int:
+        return action_dimension(self.num_elements)
+
+    @property
+    def state_dimension(self) -> int:
+        return 6 * self.num_elements + 11
+
+    def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+        self.channels = sample_static_channels(
+            self.config.geometry,
+            self.config.channel,
+            self.rng,
         )
-        self.state_dim = self._calculate_state_dimension()
-
-        self._snapshot: ChannelSnapshot | None = None
-        self._estimated_snapshot: ChannelSnapshot | None = None
-        self._hardware: HardwareStaticRealization | None = None
-        self._domain: EpisodeDomain | None = None
-        self._step_index = 0
-        self._last_metrics = np.zeros(7, dtype=np.float64)
-
-        self._episode_hardware_config: HardwareConfig | None = None
-
-    def _calculate_state_dimension(self) -> int:
-        n = self.config.channel.num_elements
-        # g, h_T, h_R: each real+imag => 6N; two direct links => 4.
-        # g, h_T, h_R:
-        # real + imag -> 6N
-        #
-        # direct T/R complex coefficients -> 4
-        #
-        # five relative link-power features -> 5
-        #
-        # previous-step metrics -> 7
-        dimension = 6 * n + 4 + 5 + 7
-        if self.config.robust.include_known_system_context:
-            dimension += 2  # normalized RF and DC budgets.
-        if self.config.robust.include_oracle_impairment_context:
-            # NMSE、放大噪声、接收噪声、硬件误差强度
-            dimension += 4
-        return dimension
-
-    def _sample_domain(self) -> EpisodeDomain:
-        robust = self.config.robust
-        return EpisodeDomain(
-            control_csi_nmse_db=float(
-                self._rng.uniform(robust.nmse_db_min, robust.nmse_db_max)
-            ),
-            amplifier_noise_scale=float(
-                self._rng.uniform(
-                    robust.amplifier_noise_scale_min,
-                    robust.amplifier_noise_scale_max,
-                )
-            ),
-            receiver_noise_scale=float(
-                self._rng.uniform(
-                    robust.receiver_noise_scale_min,
-                    robust.receiver_noise_scale_max,
-                )
-            ),
-            hardware_error_scale=float(
-                self._rng.uniform(
-                    robust.hardware_error_scale_min,
-                    robust.hardware_error_scale_max,
-                )
-            ),            
-            rf_budget=float(
-                self.config.power.maximum_rf_output_power
-                * self._rng.uniform(
-                    robust.rf_budget_scale_min,
-                    robust.rf_budget_scale_max,
-                )
-            ),
-            dc_budget=float(
-                self.config.power.maximum_total_dc_power
-                * self._rng.uniform(
-                    robust.dc_budget_scale_min,
-                    robust.dc_budget_scale_max,
-                )
-            ),
+        self.csi = estimate_control_csi(self.channels, self.config.channel, self.rng)
+        self.hardware = sample_static_hardware(
+            self.num_elements,
+            self.config.hardware,
+            self.rng,
         )
+        self.step_index = 0
+        self.previous_summary = np.zeros(6, dtype=np.float64)
+        return self._state(), {"architecture": self.config.environment.architecture}
 
-    def _estimate_snapshot(
-        self,
-        snapshot: ChannelSnapshot,
-        nmse_db: float,
-    ) -> ChannelSnapshot:
-        return ChannelSnapshot(
-            controller_to_ris=estimate_channel(
-                snapshot.controller_to_ris,
-                nmse_db,
-                self._rng,
-            ),
-            ris_to_transmission=estimate_channel(
-                snapshot.ris_to_transmission,
-                nmse_db,
-                self._rng,
-            ),
-            ris_to_reflection=estimate_channel(
-                snapshot.ris_to_reflection,
-                nmse_db,
-                self._rng,
-            ),
-            direct_transmission=complex(
-                estimate_channel(
-                    snapshot.direct_transmission,
-                    nmse_db,
-                    self._rng,
-                ).reshape(-1)[0]
-            ),
-            direct_reflection=complex(
-                estimate_channel(
-                    snapshot.direct_reflection,
-                    nmse_db,
-                    self._rng,
-                ).reshape(-1)[0]
-            ),
-        )
+    def _require_initialized(self) -> tuple[StaticChannels, CSIState, StaticHardwareState]:
+        if self.channels is None or self.csi is None or self.hardware is None:
+            raise RuntimeError("reset() must be called before step()")
+        return self.channels, self.csi, self.hardware
 
-    @staticmethod
-    def _normalize_complex(values: np.ndarray) -> np.ndarray:
-        array = np.asarray(values, dtype=np.complex128).reshape(-1)
-        scale = max(float(np.sqrt(np.mean(np.abs(array) ** 2))), 1.0e-8)
-        normalized = array / scale
-        return np.concatenate((normalized.real, normalized.imag)).astype(np.float64)
+    def _normalize_complex(self, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        scale = max(float(np.sqrt(np.mean(np.abs(values) ** 2))), 1.0e-15)
+        return np.real(values) / scale, np.imag(values) / scale
 
-    @staticmethod
-    def _relative_log_power(
-        values: np.ndarray | complex,
-        reference_power: float,
-    ) -> float:
-        array = np.asarray(
-            values,
-            dtype=np.complex128,
-        ).reshape(-1)
-
-        measured_power = max(
-            float(np.mean(np.abs(array) ** 2)),
-            1.0e-12,
-        )
-
-        reference = max(
-            float(reference_power),
-            1.0e-12,
-        )
-
-        # 相对于配置中平均链路功率的 dB/log 特征。
-        # 限制到 [-1, 1]，避免网络输入尺度过大。
-        value = np.log10(
-            measured_power / reference
-        )
-
-        return float(
-            np.clip(value, -6.0, 6.0) / 6.0
-        )
-
-    @staticmethod
-    def _scaled_hardware_config(
-        base: HardwareConfig,
-        scale: float,
-    ) -> HardwareConfig:
-        if scale < 0.0:
-            raise ValueError("hardware scale cannot be negative")
-
-        return replace(
-            base,
-            static_gain_error_std_db=(
-                base.static_gain_error_std_db * scale
-            ),
-            directional_gain_error_std_db=(
-                base.directional_gain_error_std_db * scale
-            ),
-            static_phase_error_std_rad=(
-                base.static_phase_error_std_rad * scale
-            ),
-            directional_phase_error_std_rad=(
-                base.directional_phase_error_std_rad * scale
-            ),
-            fast_phase_jitter_std_rad=(
-                base.fast_phase_jitter_std_rad * scale
-            ),
-            transmission_split_error_std=(
-                base.transmission_split_error_std * scale
-            ),
-            endpoint_gain_error_std_db=(
-                base.endpoint_gain_error_std_db * scale
-            ),
-            endpoint_phase_error_std_rad=(
-                base.endpoint_phase_error_std_rad * scale
-            ),
-        )
-
-    def _build_state(self) -> np.ndarray:
-        if self._estimated_snapshot is None or self._domain is None:
-            raise RuntimeError("environment must be reset first")
-
-        estimate = self._estimated_snapshot
-        link_power_features = np.asarray(
+    def _state(self) -> np.ndarray:
+        channels, csi, _ = self._require_initialized()
+        features: list[np.ndarray] = []
+        for result in (csi.controller_ris, csi.ris_transmission, csi.ris_reflection):
+            real, imag = self._normalize_complex(result.estimate)
+            features.extend([real, imag])
+        direct_t = csi.direct_transmission.estimate[0]
+        direct_r = csi.direct_reflection.estimate[0]
+        scalar_features = np.asarray(
             [
-                self._relative_log_power(
-                    estimate.controller_to_ris,
-                    self.config.channel.controller_ris_power,
-                ),
-                self._relative_log_power(
-                    estimate.ris_to_transmission,
-                    self.config.channel.ris_transmission_power,
-                ),
-                self._relative_log_power(
-                    estimate.ris_to_reflection,
-                    self.config.channel.ris_reflection_power,
-                ),
-                self._relative_log_power(
-                    estimate.direct_transmission,
-                    self.config.channel.direct_transmission_power,
-                ),
-                self._relative_log_power(
-                    estimate.direct_reflection,
-                    self.config.channel.direct_reflection_power,
-                ),
+                np.real(direct_t),
+                np.imag(direct_t),
+                np.real(direct_r),
+                np.imag(direct_r),
+                self.step_index / max(self.config.environment.episode_length, 1),
             ],
             dtype=np.float64,
-        )        
-        components = [
-            self._normalize_complex(
-                estimate.controller_to_ris
-            ),
-            self._normalize_complex(
-                estimate.ris_to_transmission
-            ),
-            self._normalize_complex(
-                estimate.ris_to_reflection
-            ),
-            np.asarray(
-                [
-                    estimate.direct_transmission.real,
-                    estimate.direct_transmission.imag,
-                    estimate.direct_reflection.real,
-                    estimate.direct_reflection.imag,
-                ],
-                dtype=np.float64,
-            ),
-            link_power_features,
-            np.asarray(
-                self._last_metrics,
-                dtype=np.float64,
-            ),
-        ]
-
-        if self.config.robust.include_known_system_context:
-            components.append(
-                np.asarray(
-                    [
-                        self._domain.rf_budget
-                        / self.config.power.maximum_rf_output_power,
-                        self._domain.dc_budget
-                        / self.config.power.maximum_total_dc_power,
-                    ],
-                    dtype=np.float64,
-                )
-            )
-
-        if self.config.robust.include_oracle_impairment_context:
-            hardware_scale_min = (
-                self.config.robust.hardware_error_scale_min
-            )
-            hardware_scale_max = (
-                self.config.robust.hardware_error_scale_max
-            )
-
-            hardware_scale_center = 0.5 * (
-                hardware_scale_min + hardware_scale_max
-            )
-
-            hardware_scale_half_range = max(
-                0.5 * (
-                    hardware_scale_max
-                    - hardware_scale_min
-                ),
-                1.0e-12,
-            )
-
-            normalized_hardware_scale = np.clip(
-                (
-                    self._domain.hardware_error_scale
-                    - hardware_scale_center
-                )
-                / hardware_scale_half_range,
-                -1.0,
-                1.0,
-            )
-
-            components.append(
-                np.asarray(
-                    [
-                        self._domain.control_csi_nmse_db / 30.0,
-                        self._domain.amplifier_noise_scale,
-                        self._domain.receiver_noise_scale,
-                        normalized_hardware_scale,
-                    ],
-                    dtype=np.float64,
-                )
-            )
-
-        state = np.concatenate(components).astype(np.float32)
-        if state.size != self.state_dim:
-            raise RuntimeError(
-                f"state dimension mismatch: got {state.size}, expected {self.state_dim}"
-            )
-        return state
-
-    def reset(
-        self,
-        *,
-        seed: int | None = None,
-    ) -> tuple[np.ndarray, dict[str, Any]]:
-        if seed is not None:
-            self._rng = np.random.default_rng(seed)
-
-        self._domain = self._sample_domain()
-        self._snapshot = sample_channel_snapshot(self.config.channel, self._rng)
-        self._estimated_snapshot = self._estimate_snapshot(
-            self._snapshot,
-            self._domain.control_csi_nmse_db,
         )
-        self._episode_hardware_config = self._scaled_hardware_config(
-            self.config.hardware,
-            self._domain.hardware_error_scale,
-        )
+        state = np.concatenate(features + [scalar_features, self.previous_summary])
+        if state.size != self.state_dimension:
+            raise RuntimeError(f"state size mismatch: {state.size} != {self.state_dimension}")
+        return np.clip(state, -10.0, 10.0).astype(np.float32)
 
-        self._hardware = sample_static_hardware(
-            self.config.channel.num_elements,
-            self._episode_hardware_config,
-            self._rng,
-        )
-        self._step_index = 0
-        self._last_metrics = np.zeros(7, dtype=np.float64)
-
-        return self._build_state(), {
-            "domain": self._domain,
-            "active_elements": int(np.count_nonzero(self.active_mask)),
-        }
-
-    def _require_initialized(
-        self,
-    ) -> tuple[
-        ChannelSnapshot,
-        ChannelSnapshot,
-        HardwareStaticRealization,
-        EpisodeDomain,
-    ]:
-        if (
-            self._snapshot is None
-            or self._estimated_snapshot is None
-            or self._hardware is None
-            or self._domain is None
-        ):
-            raise RuntimeError("environment must be reset before step")
-        return (
-            self._snapshot,
-            self._estimated_snapshot,
-            self._hardware,
-            self._domain,
-        )
-
-    def step(
+    def _evaluate_once(
         self,
         action: np.ndarray,
-    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-        if self._episode_hardware_config is None:
-            raise RuntimeError("episode hardware config is missing")
-
-        episode_config = replace(
-            self.config,
-            hardware=self._episode_hardware_config,
+        *,
+        full_protocol: bool,
+    ) -> ObjectiveSample:
+        channels, csi, hardware_state = self._require_initialized()
+        ideal = decode_action(
+            action,
+            num_elements=self.num_elements,
+            architecture=self.config.environment.architecture,
+            config=self.config.hardware,
+        )
+        projection = project_gains(
+            ideal,
+            csi,
+            self.config.probing,
+            self.config.hardware,
+            self.config.power,
+        )
+        projected = replace_gain(ideal, projection)
+        coefficients = realize_coefficients(
+            projected,
+            hardware_state,
+            samples=self.config.probing.samples_per_step,
+            config=self.config.hardware,
+            rng=self.rng,
+        )
+        transmission, reflection = simulate_dual_side_probing(
+            channels,
+            coefficients,
+            projected.active_mask,
+            self.config.channel,
+            self.config.probing,
+            self.rng,
+        )
+        key_metrics = evaluate_joint_key_metrics(
+            transmission,
+            reflection,
+            self.config.key_generation,
+            self.config.probing,
+            self.config.objective,
+            self.rng,
+            full_protocol=full_protocol,
+        )
+        power_metrics = actual_power_metrics(
+            channels,
+            coefficients.actual_gain_forward,
+            coefficients.actual_gain_reverse,
+            projected.active_mask,
+            self.config.probing,
+            self.config.power,
+        )
+        reward = objective_reward(key_metrics, power_metrics, self.config.objective)
+        return ObjectiveSample(
+            reward=reward,
+            key_metrics=key_metrics,
+            power_metrics=power_metrics,
+            active_elements=int(np.count_nonzero(projected.active_mask)),
+            projection_scale=projection.projection_scale,
+            architecture_feasible=projection.unit_gain_feasible,
         )
 
-        snapshot, estimate, hardware, domain = self._require_initialized()
+    def evaluate_action(
+        self,
+        action: np.ndarray,
+        *,
+        full_protocol: bool = False,
+        objective_samples: int | None = None,
+    ) -> RobustSummary:
+        count = objective_samples or self.config.robust.objective_samples
+        samples = [
+            self._evaluate_once(np.asarray(action, dtype=np.float64), full_protocol=full_protocol)
+            for _ in range(count)
+        ]
+        return aggregate_robust_samples(samples, self.config.robust)
 
-        command = decode_action(action, self.active_mask, self.config.hardware)
-        input_c, input_t, input_r = conservative_input_powers(
-            estimate.controller_to_ris,
-            estimate.ris_to_transmission,
-            estimate.ris_to_reflection,
-            nmse_db=domain.control_csi_nmse_db,
-            probing=self.config.probing,
-            power=self.config.power,
-            amplifier_noise_scale=domain.amplifier_noise_scale,
-        )
-        weight_sum = (
-            self.config.objective.transmission_weight
-            + self.config.objective.reflection_weight
-        )
-
-        weight_t = (
-            self.config.objective.transmission_weight
-            / weight_sum
-        )
-        weight_r = (
-            self.config.objective.reflection_weight
-            / weight_sum
-        )
-
-        element_utility = (
-            np.abs(estimate.controller_to_ris)
-            * (
-                weight_t
-                * np.abs(estimate.ris_to_transmission)
-                + weight_r
-                * np.abs(estimate.ris_to_reflection)
-            )
-        )
-        projected_command, projected_power = (
-            project_command_to_power_constraints(
-                command,
-                input_c,
-                input_t,
-                input_r,
-                power_config=self.config.power,
-                hardware_config=self._episode_hardware_config,
-                element_utility=element_utility,
-                rf_budget=domain.rf_budget,
-                dc_budget=domain.dc_budget,
-            )
-        )
-
-        objective_samples: list[ObjectiveResult] = []
-        for _ in range(self.config.robust.objective_samples):
-            block = build_bidirectional_block(
-                snapshot,
-                self.config.channel,
-                self.config.probing.samples_per_step,
-                self._rng,
-            )
-            result = evaluate_objective(
-                block,
-                projected_command,
-                hardware,
-                episode_config,
-                self._rng,
-                full_protocol=(
-                    episode_config.objective.key_rate_mode == "final_key"
-                ),
-                amplifier_noise_scale=domain.amplifier_noise_scale,
-                receiver_noise_scale=domain.receiver_noise_scale,
-                rf_budget=domain.rf_budget,
-                dc_budget=domain.dc_budget,
-            )
-            objective_samples.append(result)
-
-        rewards = np.asarray(
-            [sample.reward for sample in objective_samples],
-            dtype=np.float64,
-        )
-        mean_reward = float(np.mean(rewards))
-        tail_count = max(
-            self.config.robust.minimum_tail_samples,
-            int(np.ceil(self.config.robust.cvar_alpha * rewards.size)),
-        )
-        tail_count = min(tail_count, rewards.size)
-        cvar_reward = float(np.mean(np.sort(rewards)[:tail_count]))
-        robust_weight_sum = (
-            self.config.robust.mean_weight + self.config.robust.cvar_weight
-        )
-        reward = float(
-            (
-                self.config.robust.mean_weight * mean_reward
-                + self.config.robust.cvar_weight * cvar_reward
-            )
-            / robust_weight_sum
-        )
-
-        def average(attribute: str) -> float:
-            return float(
-                np.mean([getattr(sample, attribute) for sample in objective_samples])
-            )
-
-        mean_training_rate = average(
-            "training_key_rate_bps"
-        )
-        mean_final_rate = average(
-            "final_key_rate_bps"
-        )
-
-        mean_system_training_rate = average(
-            "system_training_key_rate_bps"
-        )
-        mean_system_final_rate = average(
-            "system_final_key_rate_bps"
-        )
-
-        mean_raw_kdr = average("raw_kdr")
-        mean_post_kdr = average("post_reconciliation_kdr")
-        mean_reciprocity = average("reciprocity")
-        mean_eve_leakage = average(
-            "eve_leakage_bits_per_sample"
-        )
-        mean_power = float(
-            np.mean(
-                [sample.power.total_surface_dc_power for sample in objective_samples]
-            )
-        )
-        feasibility_rate = float(
-            np.mean([sample.power.fully_feasible for sample in objective_samples])
-        )
-
-        self._last_metrics = np.asarray(
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        summary = self.evaluate_action(action, full_protocol=False)
+        self.previous_summary = np.asarray(
             [
-                np.log1p(mean_training_rate) / 10.0,
-                np.log1p(mean_final_rate) / 10.0,
-                mean_raw_kdr,
-                mean_post_kdr,
-                mean_reciprocity,
-                mean_power / max(domain.dc_budget, 1.0e-12),
-                feasibility_rate,
+                np.clip(summary.robust_reward / 5.0, -1.0, 1.0),
+                np.clip(summary.mean_secure_key_rate_bps / self.config.objective.key_rate_reference_bps, 0.0, 5.0) / 5.0,
+                2.0 * np.clip(summary.mean_raw_kdr, 0.0, 1.0) - 1.0,
+                2.0 * np.clip(summary.mean_reciprocity, 0.0, 1.0) - 1.0,
+                np.clip(summary.mean_surface_power_watt / self.config.objective.surface_power_reference_watt, 0.0, 2.0) - 1.0,
+                2.0 * summary.power_violation_probability - 1.0,
             ],
             dtype=np.float64,
         )
-
-        self._snapshot = evolve_snapshot(snapshot, self.config.channel, self._rng)
-        self._estimated_snapshot = self._estimate_snapshot(
-            self._snapshot,
-            domain.control_csi_nmse_db,
+        self.step_index += 1
+        terminated = self.step_index >= self.config.environment.episode_length
+        channels, _, _ = self._require_initialized()
+        self.channels = advance_static_channels(
+            channels,
+            self.config.channel.between_step_correlation,
+            self.rng,
         )
-        self._step_index += 1
-
-        terminated = False
-        truncated = self._step_index >= self.config.max_episode_steps
-
-        info: dict[str, Any] = {
-            "mean_reward": mean_reward,
-            "cvar_reward": cvar_reward,
-            "tail_count": tail_count,
-            "training_key_rate_bps": mean_training_rate,
-            "final_key_rate_bps": mean_final_rate,
-            "system_training_key_rate_bps": (
-                mean_system_training_rate
-            ),
-            "system_final_key_rate_bps": (
-                mean_system_final_rate
-            ),
-            "raw_kdr": mean_raw_kdr,
-            "post_reconciliation_kdr": mean_post_kdr,
-            "reciprocity": mean_reciprocity,
-            "eve_leakage_bits_per_sample": (
-                mean_eve_leakage
-            ),
-            "surface_dc_power": mean_power,
-            "feasibility_rate": feasibility_rate,
-            "projection_fully_feasible": projected_power.fully_feasible,
-            "requested_active_elements": int(
-                np.count_nonzero(command.active_mask)
-            ),
-            "remaining_active_elements": int(
-                np.count_nonzero(
-                    projected_command.active_mask
-                )
-            ),
-            "bypassed_active_elements": int(
-                np.count_nonzero(
-                    command.active_mask
-                    & ~projected_command.active_mask
-                )
-            ),
-            "projected_gain": projected_command.gain.copy(),
-            "domain": domain,
+        self.csi = estimate_control_csi(self.channels, self.config.channel, self.rng)
+        info = {
+            "robust_reward": summary.robust_reward,
+            "mean_reward": summary.mean_reward,
+            "cvar_reward": summary.cvar_reward,
+            "worst_reward": summary.worst_reward,
+            "mean_secure_key_rate_bps": summary.mean_secure_key_rate_bps,
+            "cvar_secure_key_rate_bps": summary.cvar_secure_key_rate_bps,
+            "worst_secure_key_rate_bps": summary.worst_secure_key_rate_bps,
+            "mean_raw_kdr": summary.mean_raw_kdr,
+            "cvar_raw_kdr": summary.cvar_raw_kdr,
+            "worst_raw_kdr": summary.worst_raw_kdr,
+            "mean_reciprocity": summary.mean_reciprocity,
+            "cvar_reciprocity": summary.cvar_reciprocity,
+            "worst_reciprocity": summary.worst_reciprocity,
+            "mean_surface_power_watt": summary.mean_surface_power_watt,
+            "cvar_surface_power_watt": summary.cvar_surface_power_watt,
+            "worst_surface_power_watt": summary.worst_surface_power_watt,
+            "power_violation_probability": summary.power_violation_probability,
+            "mean_active_elements": summary.mean_active_elements,
+            "mean_projection_scale": summary.mean_projection_scale,
+            "architecture": self.config.environment.architecture,
         }
-        return self._build_state(), reward, terminated, truncated, info
+        return self._state(), summary.robust_reward, terminated, False, info
 
-
-    def passive_action(self) -> np.ndarray:
-        """返回单位增益、零相位、均匀能量分配动作。"""
-        n = self.config.channel.num_elements
-        num_active = int(np.count_nonzero(self.active_mask))
-        action = np.zeros(self.action_dim, dtype=np.float32)
-        action[:num_active] = -1.0
-        # phase action -1 corresponds to phase 0.
-        action[num_active : num_active + 2 * n] = -1.0
-        # beta action 0 corresponds to beta_T=0.5.
-        return action
-
-    def random_action(self) -> np.ndarray:
-        return self._rng.uniform(-1.0, 1.0, size=self.action_dim).astype(np.float32)
-
-    def heuristic_action(self) -> np.ndarray:
-        """基于估计级联信道相位对齐的确定性基线动作。"""
-        if self._estimated_snapshot is None:
-            raise RuntimeError("environment must be reset first")
-        estimate = self._estimated_snapshot
-        n = self.config.channel.num_elements
-        num_active = int(np.count_nonzero(self.active_mask))
-
-        desired_t = np.mod(
-            -np.angle(estimate.controller_to_ris * estimate.ris_to_transmission),
-            2.0 * np.pi,
+    def with_architecture(self, architecture: str, seed: int | None = None) -> "ActiveStarRisKeyEnvironment":
+        environment = replace(
+            self.config.environment,
+            architecture=architecture,
+            seed=self.config.environment.seed if seed is None else seed,
         )
-        desired_r = np.mod(
-            -np.angle(estimate.controller_to_ris * estimate.ris_to_reflection),
-            2.0 * np.pi,
-        )
-        phase_t_action = desired_t / np.pi - 1.0
-        if self.config.hardware.phase_coupling_mode == "independent":
-            phase_r_action = desired_r / np.pi - 1.0
-        else:
-            wrapped_difference = np.angle(np.exp(1j * (desired_r - desired_t)))
-            phase_r_action = np.where(wrapped_difference >= 0.0, 1.0, -1.0)
-
-        strength_t = float(np.mean(np.abs(estimate.ris_to_transmission) ** 2))
-        strength_r = float(np.mean(np.abs(estimate.ris_to_reflection) ** 2))
-        beta_t = strength_r / max(strength_t + strength_r, 1.0e-12)
-        beta_action = np.full(n, 2.0 * beta_t - 1.0, dtype=np.float64)
-
-        action = np.concatenate(
-            (
-                np.ones(num_active, dtype=np.float64),
-                phase_t_action,
-                phase_r_action,
-                beta_action,
-            )
-        )
-        return np.asarray(np.clip(action, -1.0, 1.0), dtype=np.float32)
-
-    def evaluation_copy(
-        self,
-        *,
-        samples_per_step: int = 2048,
-        objective_samples: int = 128,
-        cvar_alpha: float = 0.10,
-        seed: int | None = None,
-    ) -> "RobustFullSchemeEnvironment":
-        robust = replace(
-            self.config.robust,
-            objective_samples=objective_samples,
-            cvar_alpha=cvar_alpha,
-            minimum_tail_samples=max(
-                4,
-                int(np.ceil(objective_samples * cvar_alpha)),
-            ),
-        )
-        objective = replace(self.config.objective, key_rate_mode="final_key")
-        probing = replace(self.config.probing, samples_per_step=samples_per_step)
-        evaluation_config = replace(
-            self.config,
-            robust=robust,
-            objective=objective,
-            probing=probing,
-        )
-        return RobustFullSchemeEnvironment(
-            evaluation_config,
-            active_mask=self.active_mask,
-            seed=seed,
-        )
+        return ActiveStarRisKeyEnvironment(replace(self.config, environment=environment))

@@ -1,55 +1,45 @@
 from __future__ import annotations
 
-import os
+import compileall
+from dataclasses import replace
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from active_star_ris.full_scheme_v2.config import load_config
+from active_star_ris.full_scheme_v2.environment import ActiveStarRisKeyEnvironment
 
 
-def run(command: list[str]) -> None:
-    print("\n>", " ".join(command))
-    environment = os.environ.copy()
-    source_path = str(ROOT / "src")
-    existing = environment.get("PYTHONPATH", "")
-    environment["PYTHONPATH"] = (
-        source_path if not existing else source_path + os.pathsep + existing
+def main() -> int:
+    if not compileall.compile_dir(ROOT / "src/active_star_ris/full_scheme_v2", quiet=1):
+        raise SystemExit("Python 编译检查失败")
+    config = load_config(ROOT / "configs/full_scheme_v2_paper.yaml")
+    config = replace(
+        config,
+        robust=replace(config.robust, objective_samples=2),
+        probing=replace(config.probing, samples_per_step=24),
+        environment=replace(config.environment, episode_length=2),
     )
-    subprocess.run(
-        command,
+    env = ActiveStarRisKeyEnvironment(config)
+    state, _ = env.reset(seed=0)
+    action = env.rng.uniform(-1.0, 1.0, env.action_dimension)
+    next_state, reward, terminated, truncated, info = env.step(action)
+    assert state.shape == next_state.shape == (env.state_dimension,)
+    assert not truncated
+    assert "mean_secure_key_rate_bps" in info
+    print(f"环境烟雾检查通过，reward={reward:.6f}, terminated={terminated}")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", str(ROOT / "tests/test_full_scheme_v2.py")],
         cwd=ROOT,
-        env=environment,
-        check=True,
+        check=False,
     )
-
-
-def main() -> None:
-    run([sys.executable, "-m", "compileall", "-q", "src", "scripts", "tests"])
-    run([sys.executable, "-m", "pytest", "-q", "tests/test_full_scheme_v2.py"])
-    run(
-        [
-            sys.executable,
-            "scripts/train_full_scheme_v2.py",
-            "--smoke",
-            "--steps",
-            "10",
-            "--output-dir",
-            "results/full_scheme_v2/smoke",
-        ]
-    )
-    run(
-        [
-            sys.executable,
-            "scripts/run_full_scheme_experiments_v2.py",
-            "--quick",
-            "--output-dir",
-            "results/full_scheme_v2/quick_experiments",
-        ]
-    )
-    print("\nAll full_scheme_v2 checks passed.")
+    return result.returncode
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

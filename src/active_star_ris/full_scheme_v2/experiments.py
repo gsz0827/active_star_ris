@@ -1,601 +1,222 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import asdict, dataclass, replace
+import json
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
-from .config import EnvironmentConfig
-from .environment import RobustFullSchemeEnvironment
-from .td3 import TD3Agent
+from .config import FullSchemeConfig
+from .environment import ActiveStarRisKeyEnvironment
+from .td3 import ReplayBuffer, TD3Agent
 
 
-Policy = Callable[[RobustFullSchemeEnvironment, np.ndarray], np.ndarray]
+def random_policy(action_dimension: int, seed: int) -> Callable[[np.ndarray], np.ndarray]:
+    rng = np.random.default_rng(seed)
+    return lambda state: rng.uniform(-1.0, 1.0, action_dimension).astype(np.float32)
 
 
-@dataclass(frozen=True)
-class ExperimentSummary:
-    method: str
-    episodes: int
+def heuristic_policy(environment: ActiveStarRisKeyEnvironment) -> Callable[[np.ndarray], np.ndarray]:
+    n = environment.num_elements
 
-    mean_return: float
-    std_return: float
-    ci95_return: float
-
-    mean_training_key_rate_bps: float
-    std_training_key_rate_bps: float
-    ci95_training_key_rate_bps: float
-
-    mean_final_key_rate_bps: float
-    std_final_key_rate_bps: float
-    ci95_final_key_rate_bps: float
-
-    mean_system_training_key_rate_bps: float
-    std_system_training_key_rate_bps: float
-    ci95_system_training_key_rate_bps: float
-
-    mean_system_final_key_rate_bps: float
-    std_system_final_key_rate_bps: float
-    ci95_system_final_key_rate_bps: float
-
-    mean_raw_kdr: float
-    std_raw_kdr: float
-    ci95_raw_kdr: float
-
-    mean_post_reconciliation_kdr: float
-    std_post_reconciliation_kdr: float
-    ci95_post_reconciliation_kdr: float
-
-    mean_reciprocity: float
-    std_reciprocity: float
-    ci95_reciprocity: float
-
-    mean_surface_dc_power: float
-    std_surface_dc_power: float
-    ci95_surface_dc_power: float
-
-    mean_feasibility_rate: float
-    std_feasibility_rate: float
-    ci95_feasibility_rate: float
-
-
-def _summary_statistics(
-    values: list[float],
-) -> tuple[float, float, float]:
-    array = np.asarray(
-        values,
-        dtype=np.float64,
-    )
-
-    if array.size == 0:
-        raise ValueError(
-            "statistics values cannot be empty"
-        )
-
-    mean = float(np.mean(array))
-
-    if array.size < 2:
-        return mean, 0.0, 0.0
-
-    std = float(
-        np.std(array, ddof=1)
-    )
-
-    ci95 = float(
-        1.96
-        * std
-        / np.sqrt(array.size)
-    )
-
-    return mean, std, ci95
-
-
-def passive_policy(
-    environment: RobustFullSchemeEnvironment,
-    state: np.ndarray,
-) -> np.ndarray:
-    del state
-    return environment.passive_action()
-
-
-def random_policy(
-    environment: RobustFullSchemeEnvironment,
-    state: np.ndarray,
-) -> np.ndarray:
-    del state
-    return environment.random_action()
-
-
-def heuristic_policy(
-    environment: RobustFullSchemeEnvironment,
-    state: np.ndarray,
-) -> np.ndarray:
-    del state
-    return environment.heuristic_action()
-
-
-def agent_policy(agent: TD3Agent) -> Policy:
-    def policy(
-        environment: RobustFullSchemeEnvironment,
-        state: np.ndarray,
-    ) -> np.ndarray:
-        del environment
-        return agent.select_action(state, explore=False)
+    def policy(state: np.ndarray) -> np.ndarray:
+        del state
+        _, csi, _ = environment._require_initialized()
+        cascaded_t = csi.controller_ris.estimate * csi.ris_transmission.estimate
+        cascaded_r = csi.controller_ris.estimate * csi.ris_reflection.estimate
+        phase_t = np.mod(-np.angle(cascaded_t), 2.0 * np.pi)
+        phase_r = np.mod(-np.angle(cascaded_r), 2.0 * np.pi)
+        phase_t_action = phase_t / np.pi - 1.0
+        phase_r_action = phase_r / np.pi - 1.0
+        gain_action = np.zeros(n, dtype=np.float64)
+        split_action = np.zeros(n, dtype=np.float64)
+        utility = np.abs(cascaded_t) + np.abs(cascaded_r)
+        if np.max(utility) > np.min(utility):
+            gates = 2.0 * (utility - np.min(utility)) / (np.max(utility) - np.min(utility)) - 1.0
+        else:
+            gates = np.zeros(n, dtype=np.float64)
+        return np.concatenate(
+            [gain_action, phase_t_action, phase_r_action, split_action, gates]
+        ).astype(np.float32)
 
     return policy
 
 
-def evaluate_policy(
-    environment: RobustFullSchemeEnvironment,
-    policy: Policy,
+def train_td3(
+    config: FullSchemeConfig,
     *,
-    method: str,
+    steps: int,
+    output_dir: str | Path,
+    seed: int,
+) -> tuple[TD3Agent, list[dict[str, float]]]:
+    environment_config = replace(config.environment, seed=seed)
+    config = replace(config, environment=environment_config)
+    env = ActiveStarRisKeyEnvironment(config)
+    state, _ = env.reset(seed=seed)
+    agent = TD3Agent(env.state_dimension, env.action_dimension, config.td3, seed=seed)
+    replay = ReplayBuffer(
+        env.state_dimension,
+        env.action_dimension,
+        config.td3.replay_capacity,
+        seed,
+    )
+    rng = np.random.default_rng(seed)
+    history: list[dict[str, float]] = []
+    for step in range(steps):
+        if step < config.td3.warmup_steps:
+            action = rng.uniform(-1.0, 1.0, env.action_dimension).astype(np.float32)
+        else:
+            action = agent.act(state, config.td3.exploration_noise)
+        next_state, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+        replay.add(state, action, reward, next_state, done)
+        losses = agent.train(replay)
+        if step % 100 == 0 or step == steps - 1:
+            row = {
+                "step": float(step),
+                "reward": float(reward),
+                "mean_secure_key_rate_bps": float(info["mean_secure_key_rate_bps"]),
+                "mean_raw_kdr": float(info["mean_raw_kdr"]),
+                "mean_surface_power_watt": float(info["mean_surface_power_watt"]),
+                "power_violation_probability": float(info["power_violation_probability"]),
+                "critic_loss": float(losses.critic_loss) if losses else float("nan"),
+                "actor_loss": float(losses.actor_loss) if losses and losses.actor_loss is not None else float("nan"),
+            }
+            history.append(row)
+        state = next_state
+        if done:
+            state, _ = env.reset()
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    agent.save(output / "td3_checkpoint.pt")
+    write_csv(output / "training_history.csv", history)
+    return agent, history
+
+
+def evaluate_policy(
+    config: FullSchemeConfig,
+    policy: Callable[[np.ndarray], np.ndarray],
+    *,
     episodes: int,
     seed: int,
-) -> ExperimentSummary:
-    if episodes < 1:
-        raise ValueError(
-            "episodes must be positive"
-        )
-
-    episode_returns: list[float] = []
-
-    training_rates: list[float] = []
-    final_rates: list[float] = []
-
-    system_training_rates: list[float] = []
-    system_final_rates: list[float] = []
-
-    raw_kdrs: list[float] = []
-    post_kdrs: list[float] = []
-    reciprocities: list[float] = []
-    powers: list[float] = []
-    feasibilities: list[float] = []
-
+    full_protocol: bool,
+    objective_samples: int = 64,
+) -> list[dict[str, float | str]]:
+    env = ActiveStarRisKeyEnvironment(replace(config, environment=replace(config.environment, seed=seed)))
+    rows: list[dict[str, float | str]] = []
     for episode in range(episodes):
-        state, _ = environment.reset(
-            seed=seed + episode
+        state, _ = env.reset(seed=seed + episode)
+        action = policy(state)
+        summary = env.evaluate_action(
+            action,
+            full_protocol=full_protocol,
+            objective_samples=objective_samples,
         )
-
-        episode_return = 0.0
-
-        step_training_rates: list[float] = []
-        step_final_rates: list[float] = []
-
-        step_system_training_rates: list[
-            float
-        ] = []
-        step_system_final_rates: list[
-            float
-        ] = []
-
-        step_raw_kdrs: list[float] = []
-        step_post_kdrs: list[float] = []
-        step_reciprocities: list[float] = []
-        step_powers: list[float] = []
-        step_feasibilities: list[float] = []
-
-        while True:
-            action = policy(
-                environment,
-                state,
-            )
-
-            (
-                state,
-                reward,
-                terminated,
-                truncated,
-                info,
-            ) = environment.step(action)
-
-            episode_return += reward
-
-            step_training_rates.append(
-                float(
-                    info[
-                        "training_key_rate_bps"
-                    ]
-                )
-            )
-            step_final_rates.append(
-                float(
-                    info[
-                        "final_key_rate_bps"
-                    ]
-                )
-            )
-
-            step_system_training_rates.append(
-                float(
-                    info[
-                        "system_training_key_rate_bps"
-                    ]
-                )
-            )
-            step_system_final_rates.append(
-                float(
-                    info[
-                        "system_final_key_rate_bps"
-                    ]
-                )
-            )
-
-            step_raw_kdrs.append(
-                float(info["raw_kdr"])
-            )
-            step_post_kdrs.append(
-                float(
-                    info[
-                        "post_reconciliation_kdr"
-                    ]
-                )
-            )
-            step_reciprocities.append(
-                float(info["reciprocity"])
-            )
-            step_powers.append(
-                float(
-                    info["surface_dc_power"]
-                )
-            )
-            step_feasibilities.append(
-                float(
-                    info["feasibility_rate"]
-                )
-            )
-
-            if terminated or truncated:
-                break
-
-        episode_returns.append(
-            float(episode_return)
+        rows.append(
+            {
+                "episode": float(episode),
+                "architecture": config.environment.architecture,
+                "robust_reward": summary.robust_reward,
+                "mean_reward": summary.mean_reward,
+                "cvar_reward": summary.cvar_reward,
+                "worst_reward": summary.worst_reward,
+                "mean_secure_key_rate_bps": summary.mean_secure_key_rate_bps,
+                "cvar_secure_key_rate_bps": summary.cvar_secure_key_rate_bps,
+                "worst_secure_key_rate_bps": summary.worst_secure_key_rate_bps,
+                "mean_raw_kdr": summary.mean_raw_kdr,
+                "cvar_raw_kdr": summary.cvar_raw_kdr,
+                "worst_raw_kdr": summary.worst_raw_kdr,
+                "mean_reciprocity": summary.mean_reciprocity,
+                "mean_surface_power_watt": summary.mean_surface_power_watt,
+                "power_violation_probability": summary.power_violation_probability,
+                "mean_active_elements": summary.mean_active_elements,
+                "mean_projection_scale": summary.mean_projection_scale,
+            }
         )
-
-        training_rates.append(
-            float(
-                np.mean(step_training_rates)
-            )
-        )
-        final_rates.append(
-            float(
-                np.mean(step_final_rates)
-            )
-        )
-
-        system_training_rates.append(
-            float(
-                np.mean(
-                    step_system_training_rates
-                )
-            )
-        )
-        system_final_rates.append(
-            float(
-                np.mean(
-                    step_system_final_rates
-                )
-            )
-        )
-
-        raw_kdrs.append(
-            float(np.mean(step_raw_kdrs))
-        )
-        post_kdrs.append(
-            float(np.mean(step_post_kdrs))
-        )
-        reciprocities.append(
-            float(
-                np.mean(step_reciprocities)
-            )
-        )
-        powers.append(
-            float(np.mean(step_powers))
-        )
-        feasibilities.append(
-            float(
-                np.mean(step_feasibilities)
-            )
-        )
-
-    return_mean, return_std, return_ci = (
-        _summary_statistics(
-            episode_returns
-        )
-    )
-
-    training_mean, training_std, training_ci = (
-        _summary_statistics(
-            training_rates
-        )
-    )
-    final_mean, final_std, final_ci = (
-        _summary_statistics(
-            final_rates
-        )
-    )
-
-    (
-        system_training_mean,
-        system_training_std,
-        system_training_ci,
-    ) = _summary_statistics(
-        system_training_rates
-    )
-
-    (
-        system_final_mean,
-        system_final_std,
-        system_final_ci,
-    ) = _summary_statistics(
-        system_final_rates
-    )
-
-    raw_kdr_mean, raw_kdr_std, raw_kdr_ci = (
-        _summary_statistics(raw_kdrs)
-    )
-
-    (
-        post_kdr_mean,
-        post_kdr_std,
-        post_kdr_ci,
-    ) = _summary_statistics(post_kdrs)
-
-    (
-        reciprocity_mean,
-        reciprocity_std,
-        reciprocity_ci,
-    ) = _summary_statistics(
-        reciprocities
-    )
-
-    power_mean, power_std, power_ci = (
-        _summary_statistics(powers)
-    )
-
-    (
-        feasibility_mean,
-        feasibility_std,
-        feasibility_ci,
-    ) = _summary_statistics(
-        feasibilities
-    )
-
-    return ExperimentSummary(
-        method=method,
-        episodes=episodes,
-
-        mean_return=return_mean,
-        std_return=return_std,
-        ci95_return=return_ci,
-
-        mean_training_key_rate_bps=(
-            training_mean
-        ),
-        std_training_key_rate_bps=(
-            training_std
-        ),
-        ci95_training_key_rate_bps=(
-            training_ci
-        ),
-
-        mean_final_key_rate_bps=final_mean,
-        std_final_key_rate_bps=final_std,
-        ci95_final_key_rate_bps=final_ci,
-
-        mean_system_training_key_rate_bps=(
-            system_training_mean
-        ),
-        std_system_training_key_rate_bps=(
-            system_training_std
-        ),
-        ci95_system_training_key_rate_bps=(
-            system_training_ci
-        ),
-
-        mean_system_final_key_rate_bps=(
-            system_final_mean
-        ),
-        std_system_final_key_rate_bps=(
-            system_final_std
-        ),
-        ci95_system_final_key_rate_bps=(
-            system_final_ci
-        ),
-
-        mean_raw_kdr=raw_kdr_mean,
-        std_raw_kdr=raw_kdr_std,
-        ci95_raw_kdr=raw_kdr_ci,
-
-        mean_post_reconciliation_kdr=(
-            post_kdr_mean
-        ),
-        std_post_reconciliation_kdr=(
-            post_kdr_std
-        ),
-        ci95_post_reconciliation_kdr=(
-            post_kdr_ci
-        ),
-
-        mean_reciprocity=reciprocity_mean,
-        std_reciprocity=reciprocity_std,
-        ci95_reciprocity=reciprocity_ci,
-
-        mean_surface_dc_power=power_mean,
-        std_surface_dc_power=power_std,
-        ci95_surface_dc_power=power_ci,
-
-        mean_feasibility_rate=(
-            feasibility_mean
-        ),
-        std_feasibility_rate=(
-            feasibility_std
-        ),
-        ci95_feasibility_rate=(
-            feasibility_ci
-        ),
-    )
+    return rows
 
 
-def write_summaries_csv(
-    path: str | Path,
-    summaries: list[ExperimentSummary],
-) -> None:
-    output = Path(path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if not summaries:
-        raise ValueError("summaries cannot be empty")
-    rows = [asdict(summary) for summary in summaries]
-    with output.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+def write_csv(path: str | Path, rows: list[dict]) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        destination.write_text("", encoding="utf-8")
+        return
+    fieldnames = list(rows[0])
+    with destination.open("w", newline="", encoding="utf-8-sig") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
 
-def run_baseline_comparison(
-    environment: RobustFullSchemeEnvironment,
+def write_json(path: str | Path, data: object) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def summarize_rows(rows: list[dict[str, float | str]]) -> dict[str, float | str]:
+    if not rows:
+        return {}
+    numeric_keys = [key for key, value in rows[0].items() if isinstance(value, (int, float)) and key != "episode"]
+    summary: dict[str, float | str] = {"architecture": str(rows[0]["architecture"])}
+    for key in numeric_keys:
+        values = np.asarray([float(row[key]) for row in rows], dtype=np.float64)
+        summary[f"{key}_mean"] = float(np.mean(values))
+        summary[f"{key}_std"] = float(np.std(values, ddof=1)) if values.size > 1 else 0.0
+        summary[f"{key}_ci95_half_width"] = float(1.96 * np.std(values, ddof=1) / np.sqrt(values.size)) if values.size > 1 else 0.0
+    return summary
+
+
+def run_architecture_suite(
+    config: FullSchemeConfig,
     *,
-    agent: TD3Agent | None,
-    episodes: int,
-    seed: int,
-) -> list[ExperimentSummary]:
-    """公平比较无源、部分有源启发式和鲁棒TD3。"""
-
-    # 严格无源 STAR-RIS：
-    # 所有 active_mask=False，因此：
-    #   - 没有内部放大噪声；
-    #   - 没有 active bias power；
-    #   - 没有 active control power；
-    #   - 所有单元增益固定为 1。
-    passive_mask = np.zeros(
-        environment.config.channel.num_elements,
-        dtype=bool,
-    )
-
-    passive_environment = RobustFullSchemeEnvironment(
-        environment.config,
-        active_mask=passive_mask,
-        seed=seed,
-    )
-
-    # 主无源baseline使用相位对齐，而不是故意使用零相位。
-    methods: list[
-        tuple[
-            str,
-            RobustFullSchemeEnvironment,
-            Policy,
-        ]
-    ] = [
-        (
-            "passive_star_ris",
-            passive_environment,
-            heuristic_policy,
-        ),
-        (
-            "random_partially_active",
-            environment,
-            random_policy,
-        ),
-        (
-            "phase_aligned_partially_active",
-            environment,
-            heuristic_policy,
-        ),
-    ]
-
-    if agent is not None:
-        methods.append(
-            (
-                "robust_td3",
-                environment,
-                agent_policy(agent),
+    output_dir: str | Path,
+    training_steps: int,
+    evaluation_episodes: int,
+    seeds: list[int],
+    objective_samples: int,
+    evaluation_probing_samples: int | None = None,
+) -> list[dict[str, float | str]]:
+    output = Path(output_dir)
+    all_summaries: list[dict[str, float | str]] = []
+    for architecture in config.experiment.architectures:
+        for seed in seeds:
+            architecture_config = replace(
+                config,
+                environment=replace(config.environment, architecture=architecture, seed=seed),
             )
-        )
-
-    # 所有方法使用相同 episode seed：
-    # seed, seed+1, seed+2, ...
-    #
-    # 这样信道/domain realization具有更好的可比性。
-    return [
-        evaluate_policy(
-            method_environment,
-            policy,
-            method=name,
-            episodes=episodes,
-            seed=seed,
-        )
-        for (
-            name,
-            method_environment,
-            policy,
-        ) in methods
-    ]
-
-
-def run_active_ratio_sweep(
-    base_config: EnvironmentConfig,
-    policy_factory: Callable[[RobustFullSchemeEnvironment], Policy],
-    active_ratios: list[float],
-    *,
-    episodes: int,
-    seed: int,
-) -> list[dict[str, float | str | int]]:
-    records: list[dict[str, float | str | int]] = []
-    for index, ratio in enumerate(active_ratios):
-        channel = replace(base_config.channel, active_ratio=float(ratio))
-        config = replace(base_config, channel=channel)
-        environment = RobustFullSchemeEnvironment(config, seed=seed + index)
-        policy = policy_factory(environment)
-        summary = evaluate_policy(
-            environment,
-            policy,
-            method="active_ratio_sweep",
-            episodes=episodes,
-            seed=seed + 1000 * index,
-        )
-        record = asdict(summary)
-        record["active_ratio"] = float(ratio)
-        records.append(record)
-    return records
-
-
-def write_records_csv(
-    path: str | Path,
-    records: list[dict[str, float | str | int]],
-) -> None:
-    output = Path(path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if not records:
-        raise ValueError("records cannot be empty")
-    with output.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(records[0]))
-        writer.writeheader()
-        writer.writerows(records)
-
-
-def run_named_config_sweep(
-    cases: list[tuple[str, float | str, EnvironmentConfig]],
-    policy_factory: Callable[[RobustFullSchemeEnvironment], Policy],
-    *,
-    parameter_name: str,
-    episodes: int,
-    seed: int,
-) -> list[dict[str, float | str | int]]:
-    """对保持状态/动作维度不变的配置项执行统一扫描。"""
-    records: list[dict[str, float | str | int]] = []
-    for index, (label, value, config) in enumerate(cases):
-        environment = RobustFullSchemeEnvironment(config, seed=seed + index)
-        policy = policy_factory(environment)
-        summary = evaluate_policy(
-            environment,
-            policy,
-            method=label,
-            episodes=episodes,
-            seed=seed + 1000 * index,
-        )
-        record = asdict(summary)
-        record[parameter_name] = value
-        records.append(record)
-    return records
+            run_dir = output / architecture / f"seed_{seed}"
+            agent, _ = train_td3(
+                architecture_config,
+                steps=training_steps,
+                output_dir=run_dir,
+                seed=seed,
+            )
+            evaluation_config = architecture_config
+            if evaluation_probing_samples is not None:
+                evaluation_config = replace(
+                    architecture_config,
+                    probing=replace(
+                        architecture_config.probing,
+                        samples_per_step=evaluation_probing_samples,
+                    ),
+                )
+            td3_policy = lambda state, agent=agent: agent.act(state, 0.0)
+            rows = evaluate_policy(
+                evaluation_config,
+                td3_policy,
+                episodes=evaluation_episodes,
+                seed=seed + 100_000,
+                full_protocol=True,
+                objective_samples=objective_samples,
+            )
+            write_csv(run_dir / "evaluation.csv", rows)
+            summary = summarize_rows(rows)
+            summary["seed"] = float(seed)
+            all_summaries.append(summary)
+    write_csv(output / "all_seed_summaries.csv", all_summaries)
+    write_json(output / "config_snapshot.json", asdict(config))
+    return all_summaries
