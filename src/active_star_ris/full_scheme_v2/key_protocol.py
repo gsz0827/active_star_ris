@@ -472,7 +472,7 @@ def evaluate_key_rate(
         raw_kdr=float(raw_kdr),
         post_reconciliation_kdr=float(post_kdr),
         estimated_entropy_bits=int(entropy_bits),
-        timated_entropy_bits=int(entropy_bits),
+        eve_leakage_bits=int(eve_leakage_bits),
         reconciliation_leakage_bits=int(parity_leakage),
         verification_leakage_bits=int(verification_leakage),
         public_communication_bits=int(public_bits),
