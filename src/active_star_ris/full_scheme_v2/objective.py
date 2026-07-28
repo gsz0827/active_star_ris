@@ -464,12 +464,7 @@ def evaluate_objective(
         + weight_r
         * gaussian_mutual_information(complex_reciprocity_r)
     )
-    reciprocity = weight_t * reciprocity_t + weight_r * reciprocity_r
 
-    theoretical_mi = (
-        weight_t * gaussian_mutual_information(reciprocity_t)
-        + weight_r * gaussian_mutual_information(reciprocity_r)
-    )
     training_rate = (
         weight_t * transmission_key.training_key_rate_bps
         + weight_r * reflection_key.training_key_rate_bps

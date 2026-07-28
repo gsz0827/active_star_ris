@@ -20,15 +20,6 @@ class ChannelSnapshot:
     direct_transmission: complex
     direct_reflection: complex
 
-    ris_to_eve_transmission: ComplexArray
-    ris_to_eve_reflection: ComplexArray
-
-    direct_controller_to_eve_transmission: complex
-    direct_transmission_user_to_eve: complex
-
-    direct_controller_to_eve_reflection: complex
-    direct_reflection_user_to_eve: complex
-
 
 @dataclass(frozen=True)
 class BidirectionalChannelBlock:
@@ -43,18 +34,6 @@ class BidirectionalChannelBlock:
     ris_to_controller_reverse: ComplexArray
     direct_transmission_reverse: ComplexArray
     direct_reflection_reverse: ComplexArray
-
-    ris_to_eve_transmission_forward: ComplexArray
-    ris_to_eve_transmission_reverse: ComplexArray
-
-    ris_to_eve_reflection_forward: ComplexArray
-    ris_to_eve_reflection_reverse: ComplexArray
-
-    direct_controller_to_eve_transmission: ComplexArray
-    direct_transmission_user_to_eve: ComplexArray
-
-    direct_controller_to_eve_reflection: ComplexArray
-    direct_reflection_user_to_eve: ComplexArray
 
 
 @dataclass(frozen=True)

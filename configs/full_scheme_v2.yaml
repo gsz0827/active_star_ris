@@ -35,6 +35,9 @@ probing:
   forward_reverse_guard_seconds: 0.00005
   branch_switch_guard_seconds: 0.0001
 
+  receiver_noise_variance_eve_transmission: 0.001
+  receiver_noise_variance_eve_reflection: 0.001
+
 hardware:
   maximum_active_gain: 4.0
 
@@ -50,7 +53,10 @@ hardware:
 
   phase_quantization_bits: 4
   gain_quantization_bits: 4
-  phase_coupling_mode: independent
+  passive_transmission_insertion_loss_db: 1.0
+  passive_reflection_insertion_loss_db: 1.0
+
+  phase_coupling_mode: quadrature
 
   per_active_element_saturation_power: 5.0
 
@@ -91,7 +97,7 @@ key_generation:
 
   # 仅用于training_bound模式
   minimum_entropy_bits_per_retained_bit: 0.80
-  
+
   reconciliation_efficiency: 1.15
   maximum_trainable_raw_kdr: 0.30
 
@@ -150,10 +156,17 @@ robust:
 max_episode_steps: 50
 
 channel:
-  eve_enabled: true
+  num_elements: 32
+  active_ratio: 0.25
+  rician_k_factor: 3.0
 
-  # 主实验扫描建议：
-  # 0.0、0.2、0.4、0.6、0.8
+  controller_ris_power: 1.0
+  ris_transmission_power: 1.0
+  ris_reflection_power: 1.0
+  direct_transmission_power: 0.10
+  direct_reflection_power: 0.10
+
+  eve_enabled: true
   eve_spatial_correlation: 0.20
 
   ris_eve_transmission_power: 0.50
@@ -161,10 +174,5 @@ channel:
 
   direct_controller_eve_transmission_power: 0.05
   direct_transmission_user_eve_power: 0.05
-
   direct_controller_eve_reflection_power: 0.05
   direct_reflection_user_eve_power: 0.05
-
-probing:
-  receiver_noise_variance_eve_transmission: 0.001
-  receiver_noise_variance_eve_reflection: 0.001

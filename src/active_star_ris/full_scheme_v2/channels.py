@@ -404,11 +404,18 @@ def build_bidirectional_block(
         d_t_forward,
         delay_rho,
         rng,
+        average_power=(
+            config.direct_transmission_power
+        ),
     )
+
     d_r_reverse = delayed_reciprocal(
         d_r_forward,
         delay_rho,
         rng,
+        average_power=(
+            config.direct_reflection_power
+        ),
     )
 
     return BidirectionalChannelBlock(

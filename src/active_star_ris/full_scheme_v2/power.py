@@ -215,6 +215,7 @@ def project_command_to_power_constraints(
     *,
     power_config: PowerConfig,
     hardware_config: HardwareConfig,
+    element_utility: np.ndarray | None = None,
     rf_budget: float | None = None,
     dc_budget: float | None = None,
 ) -> tuple[IdealSurfaceCommand, PowerResult]:
@@ -327,50 +328,134 @@ def project_command_to_power_constraints(
             dc_budget=dc_budget,
         )
 
-    passive_gain = np.ones_like(
+    utility = np.ones_like(
         requested_gain,
         dtype=np.float64,
     )
 
-    requested_result = robust_result_for(
-        requested_gain,
-        original_active,
-    )
+    if element_utility is not None:
+        utility_input = np.asarray(
+            element_utility,
+            dtype=np.float64,
+        ).reshape(-1)
 
-    # 情况 1：请求增益已经可行
-    if requested_result.fully_feasible:
-        projected_gain = requested_gain.copy()
-        projected_mask = original_active.copy()
+        if utility_input.size != requested_gain.size:
+            raise ValueError(
+                "element_utility size mismatch"
+            )
 
-    else:
-        unit_active_result = robust_result_for(
-            passive_gain,
-            original_active,
+        utility = np.maximum(
+            utility_input,
+            0.0,
         )
 
-        # 情况 2：有源单元保持 active、增益为 1 仍不可行
-        # 将全部有源单元切换为无源 bypass
-        if not unit_active_result.fully_feasible:
-            projected_mask = np.zeros_like(
-                original_active,
-                dtype=bool,
-            )
-            projected_gain = passive_gain
+    worst_input_power = np.maximum.reduce(
+        (
+            np.asarray(
+                input_power_controller,
+                dtype=np.float64,
+            ).reshape(-1),
+            np.asarray(
+                input_power_transmission,
+                dtype=np.float64,
+            ).reshape(-1),
+            np.asarray(
+                input_power_reflection,
+                dtype=np.float64,
+            ).reshape(-1),
+        )
+    )
 
-            bypass_result = robust_result_for(
-                projected_gain,
+    burden = (
+        requested_gain**2
+        * worst_input_power
+        + power_config.active_element_bias_power
+    )
+
+    utility_to_burden = utility / np.maximum(
+        burden,
+        1.0e-12,
+    )
+
+    projected_mask = original_active.copy()
+    unit_gain = np.ones_like(
+        requested_gain,
+        dtype=np.float64,
+    )
+
+    unit_result = robust_result_for(
+        unit_gain,
+        projected_mask,
+    )
+
+    # 单位增益仍不可行：逐个关闭低效用单元
+    if not unit_result.fully_feasible:
+        active_indices = np.flatnonzero(
+            projected_mask
+        )
+
+        removal_order = active_indices[
+            np.argsort(
+                utility_to_burden[
+                    active_indices
+                ]
+            )
+        ]
+
+        for element_index in removal_order:
+            projected_mask[
+                element_index
+            ] = False
+
+            unit_result = robust_result_for(
+                unit_gain,
                 projected_mask,
             )
 
-            bypass_command = make_candidate(
+            if unit_result.fully_feasible:
+                break
+
+    # 全部旁路仍不可行
+    if not unit_result.fully_feasible:
+        projected_mask = np.zeros_like(
+            original_active,
+            dtype=bool,
+        )
+
+        projected_gain = np.ones_like(
+            requested_gain,
+            dtype=np.float64,
+        )
+
+        projected_command = make_candidate(
+            projected_gain,
+            projected_mask,
+        )
+
+        return (
+            projected_command,
+            robust_result_for(
                 projected_gain,
                 projected_mask,
-            )
+            ),
+        )
 
-            return bypass_command, bypass_result
+    masked_requested_gain = np.where(
+        projected_mask,
+        requested_gain,
+        1.0,
+    )
 
-        # 情况 3：单位增益可行，在 1 和请求增益之间二分
-        projected_mask = original_active.copy()
+    requested_result = robust_result_for(
+        masked_requested_gain,
+        projected_mask,
+    )
+
+    if requested_result.fully_feasible:
+        projected_gain = (
+            masked_requested_gain.copy()
+        )
+    else:
         lower = 0.0
         upper = 1.0
 
@@ -381,15 +466,19 @@ def project_command_to_power_constraints(
                 lower + upper
             )
 
-            candidate_gain = _scale_active_gain(
-                requested_gain,
-                projected_mask,
-                middle,
+            candidate_gain = (
+                _scale_active_gain(
+                    masked_requested_gain,
+                    projected_mask,
+                    middle,
+                )
             )
 
-            candidate_result = robust_result_for(
-                candidate_gain,
-                projected_mask,
+            candidate_result = (
+                robust_result_for(
+                    candidate_gain,
+                    projected_mask,
+                )
             )
 
             if candidate_result.fully_feasible:
@@ -398,7 +487,7 @@ def project_command_to_power_constraints(
                 upper = middle
 
         projected_gain = _scale_active_gain(
-            requested_gain,
+            masked_requested_gain,
             projected_mask,
             lower,
         )

@@ -35,6 +35,10 @@ from active_star_ris.full_scheme_v2.models import (
 )
 from active_star_ris.full_scheme_v2.td3 import ReplayBuffer
 
+from active_star_ris.full_scheme_v2.channels import (
+    complex_normal,
+    correlated_eve_channel,
+)
 
 CONFIG_PATH = (
     Path(__file__).resolve().parents[1]
@@ -565,3 +569,128 @@ def test_experiment_summary_contains_system_rate() -> None:
         summary.ci95_system_final_key_rate_bps
         >= 0.0
     )
+
+
+def test_correlated_eve_channel_power_and_correlation():
+    rng = np.random.default_rng(100)
+
+    legitimate = complex_normal(
+        rng,
+        (10000, 4),
+        variance=1.0,
+    )
+
+    eve = correlated_eve_channel(
+        legitimate,
+        average_power=0.5,
+        correlation=0.7,
+        rng=rng,
+    )
+
+    measured_power = float(
+        np.mean(np.abs(eve) ** 2)
+    )
+
+    measured_correlation = float(
+        np.abs(
+            np.vdot(
+                legitimate.reshape(-1),
+                eve.reshape(-1),
+            )
+        )
+        / (
+            np.linalg.norm(
+                legitimate.reshape(-1)
+            )
+            * np.linalg.norm(
+                eve.reshape(-1)
+            )
+        )
+    )
+
+    assert np.isclose(
+        measured_power,
+        0.5,
+        rtol=0.05,
+    )
+
+    assert np.isclose(
+        measured_correlation,
+        0.7,
+        atol=0.05,
+    )
+
+
+def test_eve_leakage_reduces_training_key_bits():
+    rng = np.random.default_rng(101)
+
+    source = (
+        rng.normal(size=4096)
+        + 1j * rng.normal(size=4096)
+    )
+
+    observation_a = source
+    observation_b = (
+        source
+        + 0.01
+        * (
+            rng.normal(size=4096)
+            + 1j * rng.normal(size=4096)
+        )
+    )
+
+    no_eve = evaluate_key_rate(
+        observation_a,
+        observation_b,
+        key_config=KeyGenerationConfig(),
+        probing_config=ProbingConfig(
+            samples_per_step=4096
+        ),
+        rng=rng,
+        full_protocol=False,
+        eve_leakage_bits_per_retained_bit=0.0,
+    )
+
+    strong_eve = evaluate_key_rate(
+        observation_a,
+        observation_b,
+        key_config=KeyGenerationConfig(),
+        probing_config=ProbingConfig(
+            samples_per_step=4096
+        ),
+        rng=rng,
+        full_protocol=False,
+        eve_leakage_bits_per_retained_bit=0.5,
+    )
+
+    assert (
+        strong_eve.training_secret_bits
+        < no_eve.training_secret_bits
+    )
+
+
+def test_full_protocol_uses_external_min_entropy():
+    rng = np.random.default_rng(102)
+
+    source = (
+        rng.normal(size=4096)
+        + 1j * rng.normal(size=4096)
+    )
+
+    result = evaluate_key_rate(
+        source,
+        source,
+        key_config=KeyGenerationConfig(
+            privacy_margin_bits=0,
+            verification_tag_bits=1,
+        ),
+        probing_config=ProbingConfig(
+            samples_per_step=4096
+        ),
+        rng=rng,
+        full_protocol=True,
+        conditional_min_entropy_bits=100,
+    )
+
+    assert result.estimated_entropy_bits == 100
+

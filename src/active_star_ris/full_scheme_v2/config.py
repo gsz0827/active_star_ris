@@ -29,26 +29,18 @@ class ChannelConfig:
     direct_transmission_power: float = 0.10
     direct_reflection_power: float = 0.10
 
-    # ========================================================
-    # Eve信道参数
-    # ========================================================
-
+    # Eve信道
     eve_enabled: bool = True
-
-    # 这里表示Eve信道与对应合法用户信道的复相关系数。
     eve_spatial_correlation: float = 0.20
 
-    # RIS -> Eve平均信道功率
     ris_eve_transmission_power: float = 0.50
     ris_eve_reflection_power: float = 0.50
 
-    # Controller/User -> Eve直达链路平均功率
     direct_controller_eve_transmission_power: float = 0.05
     direct_transmission_user_eve_power: float = 0.05
-
     direct_controller_eve_reflection_power: float = 0.05
     direct_reflection_user_eve_power: float = 0.05
-    
+
     within_block_correlation: float = 0.995
     between_step_correlation: float = 0.98
     forward_reverse_delay_seconds: float = 1.0e-3
@@ -56,24 +48,22 @@ class ChannelConfig:
 
     control_csi_nmse_db: float = -15.0
 
-    ris_eve_transmission_power: float = 0.50
-    ris_eve_reflection_power: float = 0.50
-
-    direct_controller_eve_transmission_power: float = 0.05
-    direct_transmission_user_eve_power: float = 0.05
-
-    direct_controller_eve_reflection_power: float = 0.05
-    direct_reflection_user_eve_power: float = 0.05
-
-    eve_legitimate_spatial_correlation: float = 0.20
-
     def validate(self) -> None:
         if self.num_elements < 2:
-            raise ValueError("num_elements must be at least 2")
+            raise ValueError(
+                "num_elements must be at least 2"
+            )
+
         if not 0.0 <= self.active_ratio <= 1.0:
-            raise ValueError("active_ratio must lie in [0, 1]")
+            raise ValueError(
+                "active_ratio must lie in [0, 1]"
+            )
+
         if self.rician_k_factor < 0.0:
-            raise ValueError("rician_k_factor cannot be negative")
+            raise ValueError(
+                "rician_k_factor cannot be negative"
+            )
+
         for name in (
             "controller_ris_power",
             "ris_transmission_power",
@@ -87,20 +77,37 @@ class ChannelConfig:
             "direct_controller_eve_reflection_power",
             "direct_reflection_user_eve_power",
         ):
+            if getattr(self, name) < 0.0:
+                raise ValueError(
+                    f"{name} cannot be negative"
+                )
+
         if not 0.0 <= self.eve_spatial_correlation <= 1.0:
             raise ValueError(
                 "eve_spatial_correlation must lie in [0, 1]"
             )
-            if getattr(self, name) < 0.0:
-                raise ValueError(f"{name} cannot be negative")
-        for name in ("within_block_correlation", "between_step_correlation"):
+
+        for name in (
+            "within_block_correlation",
+            "between_step_correlation",
+        ):
             value = getattr(self, name)
             if not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must lie in [0, 1]")
+                raise ValueError(
+                    f"{name} must lie in [0, 1]"
+                )
+
         if self.forward_reverse_delay_seconds < 0.0:
-            raise ValueError("forward_reverse_delay_seconds cannot be negative")
+            raise ValueError(
+                "forward_reverse_delay_seconds "
+                "cannot be negative"
+            )
+
         if self.channel_coherence_time_seconds <= 0.0:
-            raise ValueError("channel_coherence_time_seconds must be positive")
+            raise ValueError(
+                "channel_coherence_time_seconds "
+                "must be positive"
+            )
 
     @property
     def forward_reverse_correlation(self) -> float:
@@ -217,8 +224,6 @@ class HardwareConfig:
             raise ValueError("phase_quantization_bits must be positive or None")
         if self.gain_quantization_bits is not None and self.gain_quantization_bits < 1:
             raise ValueError("gain_quantization_bits must be positive or None")
-        if self.phase_coupling_mode not in {"independent", "quadrature"}:
-            raise ValueError("invalid phase_coupling_mode")
         if self.per_active_element_saturation_power <= 0.0:
             raise ValueError("per_active_element_saturation_power must be positive")
         for name in (
@@ -306,7 +311,7 @@ class KeyGenerationConfig:
     # 仅用于TD3训练阶段的边际熵代理。
     # full_protocol=True时不得直接使用该固定值。
     minimum_entropy_bits_per_retained_bit: float = 0.80
-    
+
     reconciliation_efficiency: float = 1.15
     maximum_trainable_raw_kdr: float = 0.30
 
