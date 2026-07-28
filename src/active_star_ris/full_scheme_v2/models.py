@@ -20,6 +20,15 @@ class ChannelSnapshot:
     direct_transmission: complex
     direct_reflection: complex
 
+    ris_to_eve_transmission: ComplexArray
+    ris_to_eve_reflection: ComplexArray
+
+    direct_controller_to_eve_transmission: complex
+    direct_transmission_user_to_eve: complex
+
+    direct_controller_to_eve_reflection: complex
+    direct_reflection_user_to_eve: complex
+
 
 @dataclass(frozen=True)
 class BidirectionalChannelBlock:
@@ -34,6 +43,18 @@ class BidirectionalChannelBlock:
     ris_to_controller_reverse: ComplexArray
     direct_transmission_reverse: ComplexArray
     direct_reflection_reverse: ComplexArray
+
+    ris_to_eve_transmission_forward: ComplexArray
+    ris_to_eve_transmission_reverse: ComplexArray
+
+    ris_to_eve_reflection_forward: ComplexArray
+    ris_to_eve_reflection_reverse: ComplexArray
+
+    direct_controller_to_eve_transmission: ComplexArray
+    direct_transmission_user_to_eve: ComplexArray
+
+    direct_controller_to_eve_reflection: ComplexArray
+    direct_reflection_user_to_eve: ComplexArray
 
 
 @dataclass(frozen=True)
@@ -87,10 +108,16 @@ class HardwareStaticRealization:
 class BranchProbingResult:
     observation_forward: ComplexArray
     observation_reverse: ComplexArray
+
     effective_channel_forward: ComplexArray
     effective_channel_reverse: ComplexArray
+
     forwarded_active_noise_forward: ComplexArray
     forwarded_active_noise_reverse: ComplexArray
+
+    # 新增：每个样本、每个单元的内部噪声
+    active_noise_forward: ComplexArray
+    active_noise_reverse: ComplexArray
 
 
 @dataclass(frozen=True)
@@ -131,6 +158,10 @@ class KeyRateResult:
     post_reconciliation_kdr: float
 
     estimated_entropy_bits: int
+
+    # 从边际熵中扣除的Eve信息泄漏比特数
+    eve_leakage_bits: int
+
     reconciliation_leakage_bits: int
     verification_leakage_bits: int
     public_communication_bits: int
@@ -171,3 +202,7 @@ class ObjectiveResult:
 
     system_training_key_rate_bps: float
     system_final_key_rate_bps: float
+
+    transmission_eve_leakage_bits_per_sample: float
+    reflection_eve_leakage_bits_per_sample: float
+    eve_leakage_bits_per_sample: float

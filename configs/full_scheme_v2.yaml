@@ -89,7 +89,9 @@ key_generation:
   privacy_margin_bits: 64
   maximum_final_key_bits: 256
 
+  # 仅用于training_bound模式
   minimum_entropy_bits_per_retained_bit: 0.80
+  
   reconciliation_efficiency: 1.15
   maximum_trainable_raw_kdr: 0.30
 
@@ -146,3 +148,23 @@ robust:
   include_oracle_impairment_context: false
 
 max_episode_steps: 50
+
+channel:
+  eve_enabled: true
+
+  # 主实验扫描建议：
+  # 0.0、0.2、0.4、0.6、0.8
+  eve_spatial_correlation: 0.20
+
+  ris_eve_transmission_power: 0.50
+  ris_eve_reflection_power: 0.50
+
+  direct_controller_eve_transmission_power: 0.05
+  direct_transmission_user_eve_power: 0.05
+
+  direct_controller_eve_reflection_power: 0.05
+  direct_reflection_user_eve_power: 0.05
+
+probing:
+  receiver_noise_variance_eve_transmission: 0.001
+  receiver_noise_variance_eve_reflection: 0.001

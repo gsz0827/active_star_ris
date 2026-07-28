@@ -7,7 +7,11 @@ from typing import Any, Literal, TypeVar, get_type_hints
 import yaml
 
 
-PhaseCouplingMode = Literal["independent", "quadrature"]
+PhaseCouplingMode = Literal[
+    "independent",
+    "quadrature",
+    "hybrid",
+]
 FeatureName = Literal["real", "imag", "magnitude", "phase"]
 SelectionPolicy = Literal["alice", "intersection"]
 KeyRateMode = Literal["training_bound", "final_key"]
@@ -25,12 +29,43 @@ class ChannelConfig:
     direct_transmission_power: float = 0.10
     direct_reflection_power: float = 0.10
 
+    # ========================================================
+    # Eve信道参数
+    # ========================================================
+
+    eve_enabled: bool = True
+
+    # 这里表示Eve信道与对应合法用户信道的复相关系数。
+    eve_spatial_correlation: float = 0.20
+
+    # RIS -> Eve平均信道功率
+    ris_eve_transmission_power: float = 0.50
+    ris_eve_reflection_power: float = 0.50
+
+    # Controller/User -> Eve直达链路平均功率
+    direct_controller_eve_transmission_power: float = 0.05
+    direct_transmission_user_eve_power: float = 0.05
+
+    direct_controller_eve_reflection_power: float = 0.05
+    direct_reflection_user_eve_power: float = 0.05
+    
     within_block_correlation: float = 0.995
     between_step_correlation: float = 0.98
     forward_reverse_delay_seconds: float = 1.0e-3
     channel_coherence_time_seconds: float = 1.0e-2
 
     control_csi_nmse_db: float = -15.0
+
+    ris_eve_transmission_power: float = 0.50
+    ris_eve_reflection_power: float = 0.50
+
+    direct_controller_eve_transmission_power: float = 0.05
+    direct_transmission_user_eve_power: float = 0.05
+
+    direct_controller_eve_reflection_power: float = 0.05
+    direct_reflection_user_eve_power: float = 0.05
+
+    eve_legitimate_spatial_correlation: float = 0.20
 
     def validate(self) -> None:
         if self.num_elements < 2:
@@ -45,7 +80,17 @@ class ChannelConfig:
             "ris_reflection_power",
             "direct_transmission_power",
             "direct_reflection_power",
+            "ris_eve_transmission_power",
+            "ris_eve_reflection_power",
+            "direct_controller_eve_transmission_power",
+            "direct_transmission_user_eve_power",
+            "direct_controller_eve_reflection_power",
+            "direct_reflection_user_eve_power",
         ):
+        if not 0.0 <= self.eve_spatial_correlation <= 1.0:
+            raise ValueError(
+                "eve_spatial_correlation must lie in [0, 1]"
+            )
             if getattr(self, name) < 0.0:
                 raise ValueError(f"{name} cannot be negative")
         for name in ("within_block_correlation", "between_step_correlation"):
@@ -85,6 +130,9 @@ class ProbingConfig:
     receiver_noise_variance_transmission_user: float = 1.0e-3
     receiver_noise_variance_reflection_user: float = 1.0e-3
 
+    receiver_noise_variance_eve_transmission: float = 1.0e-3
+    receiver_noise_variance_eve_reflection: float = 1.0e-3
+
     pilot_symbol_duration_seconds: float = 1.0e-4
     forward_reverse_guard_seconds: float = 5.0e-5
     branch_switch_guard_seconds: float = 1.0e-4
@@ -112,6 +160,8 @@ class ProbingConfig:
             "receiver_noise_variance_controller",
             "receiver_noise_variance_transmission_user",
             "receiver_noise_variance_reflection_user",
+            "receiver_noise_variance_eve_transmission",
+            "receiver_noise_variance_eve_reflection",
             "forward_reverse_guard_seconds",
             "branch_switch_guard_seconds",
         ):
@@ -122,6 +172,10 @@ class ProbingConfig:
 @dataclass(frozen=True)
 class HardwareConfig:
     maximum_active_gain: float = 4.0
+
+    # 被动单元插入损耗
+    passive_transmission_insertion_loss_db: float = 1.0
+    passive_reflection_insertion_loss_db: float = 1.0
 
     static_gain_error_std_db: float = 0.20
     directional_gain_error_std_db: float = 0.10
@@ -135,7 +189,9 @@ class HardwareConfig:
 
     phase_quantization_bits: int | None = 4
     gain_quantization_bits: int | None = 4
-    phase_coupling_mode: PhaseCouplingMode = "independent"
+
+    # 主论文建议使用 quadrature
+    phase_coupling_mode: PhaseCouplingMode = "quadrature"
 
     per_active_element_saturation_power: float = 5.0
 
@@ -165,7 +221,19 @@ class HardwareConfig:
             raise ValueError("invalid phase_coupling_mode")
         if self.per_active_element_saturation_power <= 0.0:
             raise ValueError("per_active_element_saturation_power must be positive")
+        for name in (
+            "passive_transmission_insertion_loss_db",
+            "passive_reflection_insertion_loss_db",
+        ):
+            if getattr(self, name) < 0.0:
+                raise ValueError(f"{name} cannot be negative")
 
+        if self.phase_coupling_mode not in {
+            "independent",
+            "quadrature",
+            "hybrid",
+        }:
+            raise ValueError("invalid phase_coupling_mode")
 
 @dataclass(frozen=True)
 class PowerConfig:
@@ -235,7 +303,10 @@ class KeyGenerationConfig:
     privacy_margin_bits: int = 64
     maximum_final_key_bits: int = 256
 
+    # 仅用于TD3训练阶段的边际熵代理。
+    # full_protocol=True时不得直接使用该固定值。
     minimum_entropy_bits_per_retained_bit: float = 0.80
+    
     reconciliation_efficiency: float = 1.15
     maximum_trainable_raw_kdr: float = 0.30
 

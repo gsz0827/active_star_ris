@@ -24,6 +24,81 @@ def complex_normal(
     )
 
 
+def correlated_eve_channel(
+    legitimate_channel: np.ndarray,
+    average_power: float,
+    correlation: float,
+    rng: np.random.Generator,
+) -> ComplexArray:
+    """生成与合法信道具有可控复相关性的Eve信道。
+
+    模型：
+        h_e = sqrt(P_e) * (
+            rho * h_normalized
+            + sqrt(1-rho^2) * w
+        )
+
+    其中：
+        rho为复相关系数；
+        P_e为Eve链路平均功率；
+        w为单位功率复高斯随机变量。
+    """
+    if average_power < 0.0:
+        raise ValueError(
+            "average_power cannot be negative"
+        )
+
+    reference = np.asarray(
+        legitimate_channel,
+        dtype=np.complex128,
+    )
+
+    if average_power == 0.0:
+        return np.zeros_like(
+            reference,
+            dtype=np.complex128,
+        )
+
+    rho = float(
+        np.clip(correlation, 0.0, 1.0)
+    )
+
+    reference_power = float(
+        np.mean(np.abs(reference) ** 2)
+    )
+
+    if (
+        not np.isfinite(reference_power)
+        or reference_power <= 1.0e-12
+    ):
+        normalized_reference = complex_normal(
+            rng,
+            reference.shape,
+            variance=1.0,
+        )
+    else:
+        normalized_reference = (
+            reference / np.sqrt(reference_power)
+        )
+
+    innovation = complex_normal(
+        rng,
+        reference.shape,
+        variance=1.0,
+    )
+
+    eve_channel = np.sqrt(average_power) * (
+        rho * normalized_reference
+        + np.sqrt(max(0.0, 1.0 - rho**2))
+        * innovation
+    )
+
+    return np.asarray(
+        eve_channel,
+        dtype=np.complex128,
+    )
+
+
 def sample_rician(
     rng: np.random.Generator,
     shape: tuple[int, ...] | int,
@@ -159,36 +234,62 @@ def gauss_markov_block(
     num_samples: int,
     correlation: float,
     rng: np.random.Generator,
+    *,
+    average_power: float,
 ) -> ComplexArray:
     if num_samples < 1:
-        raise ValueError("num_samples must be positive")
+        raise ValueError(
+            "num_samples must be positive"
+        )
     if not 0.0 <= correlation <= 1.0:
-        raise ValueError("correlation must lie in [0, 1]")
+        raise ValueError(
+            "correlation must lie in [0, 1]"
+        )
+    if average_power < 0.0:
+        raise ValueError(
+            "average_power cannot be negative"
+        )
 
-    initial_array = np.asarray(initial, dtype=np.complex128)
+    initial_array = np.asarray(
+        initial,
+        dtype=np.complex128,
+    )
     scalar = initial_array.ndim == 0
+
     if scalar:
         initial_array = initial_array.reshape(1)
 
-    result = np.empty((num_samples, initial_array.size), dtype=np.complex128)
+    result = np.empty(
+        (num_samples, initial_array.size),
+        dtype=np.complex128,
+    )
     result[0] = initial_array.reshape(-1)
 
-    element_power = np.maximum(
-        np.abs(initial_array.reshape(-1)) ** 2,
-        1.0e-12,
+    innovation_scale = np.sqrt(
+        max(0.0, 1.0 - correlation**2)
     )
-    innovation_scale = np.sqrt(max(0.0, 1.0 - correlation**2))
 
     for index in range(1, num_samples):
         innovation = complex_normal(
             rng,
             initial_array.size,
-            variance=1.0,
-        ) * np.sqrt(element_power)
-        result[index] = correlation * result[index - 1] + innovation_scale * innovation
+            variance=max(
+                average_power,
+                1.0e-12,
+            ),
+        )
+
+        result[index] = (
+            correlation * result[index - 1]
+            + innovation_scale * innovation
+        )
 
     if scalar:
-        return np.asarray(result[:, 0], dtype=np.complex128)
+        return np.asarray(
+            result[:, 0],
+            dtype=np.complex128,
+        )
+
     return result
 
 
@@ -196,23 +297,38 @@ def delayed_reciprocal(
     forward: ComplexArray,
     correlation: float,
     rng: np.random.Generator,
+    *,
+    average_power: float,
 ) -> ComplexArray:
-    values = np.asarray(forward, dtype=np.complex128)
-    if values.ndim not in {1, 2}:
-        raise ValueError("forward channel must be one- or two-dimensional")
+    values = np.asarray(
+        forward,
+        dtype=np.complex128,
+    )
 
-    if values.ndim == 1:
-        power = np.maximum(np.abs(values) ** 2, 1.0e-12)
-    else:
-        power = np.maximum(
-            np.mean(np.abs(values) ** 2, axis=0, keepdims=True),
-            1.0e-12,
+    if values.ndim not in {1, 2}:
+        raise ValueError(
+            "forward channel must be "
+            "one- or two-dimensional"
         )
 
-    innovation = complex_normal(rng, values.shape, variance=1.0) * np.sqrt(power)
+    innovation = complex_normal(
+        rng,
+        values.shape,
+        variance=max(
+            average_power,
+            1.0e-12,
+        ),
+    )
+
     return np.asarray(
         correlation * values
-        + np.sqrt(max(0.0, 1.0 - correlation**2)) * innovation,
+        + np.sqrt(
+            max(
+                0.0,
+                1.0 - correlation**2,
+            )
+        )
+        * innovation,
         dtype=np.complex128,
     )
 
@@ -228,30 +344,39 @@ def build_bidirectional_block(
         num_samples,
         config.within_block_correlation,
         rng,
+        average_power=config.controller_ris_power,
     )
+
     h_t_forward = gauss_markov_block(
         snapshot.ris_to_transmission,
         num_samples,
         config.within_block_correlation,
         rng,
+        average_power=config.ris_transmission_power,
     )
+
     h_r_forward = gauss_markov_block(
         snapshot.ris_to_reflection,
         num_samples,
         config.within_block_correlation,
         rng,
+        average_power=config.ris_reflection_power,
     )
+
     d_t_forward = gauss_markov_block(
         snapshot.direct_transmission,
         num_samples,
         config.within_block_correlation,
         rng,
+        average_power=config.direct_transmission_power,
     )
+
     d_r_forward = gauss_markov_block(
         snapshot.direct_reflection,
         num_samples,
         config.within_block_correlation,
         rng,
+        average_power=config.direct_reflection_power,
     )
 
     delay_rho = config.forward_reverse_correlation
@@ -259,16 +384,21 @@ def build_bidirectional_block(
         h_t_forward,
         delay_rho,
         rng,
+        average_power=config.ris_transmission_power,
     )
+
     reflection_to_ris_reverse = delayed_reciprocal(
         h_r_forward,
         delay_rho,
         rng,
+        average_power=config.ris_reflection_power,
     )
+
     ris_to_controller_reverse = delayed_reciprocal(
         g_forward,
         delay_rho,
         rng,
+        average_power=config.controller_ris_power,
     )
     d_t_reverse = delayed_reciprocal(
         d_t_forward,

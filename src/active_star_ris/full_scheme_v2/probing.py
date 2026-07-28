@@ -123,12 +123,38 @@ def _simulate_branch(
     )
 
     return BranchProbingResult(
-        observation_forward=np.asarray(observation_forward, dtype=np.complex128),
-        observation_reverse=np.asarray(observation_reverse, dtype=np.complex128),
-        effective_channel_forward=np.asarray(effective_forward, dtype=np.complex128),
-        effective_channel_reverse=np.asarray(effective_reverse, dtype=np.complex128),
-        forwarded_active_noise_forward=np.asarray(forwarded_forward, dtype=np.complex128),
-        forwarded_active_noise_reverse=np.asarray(forwarded_reverse, dtype=np.complex128),
+        observation_forward=np.asarray(
+            observation_forward,
+            dtype=np.complex128,
+        ),
+        observation_reverse=np.asarray(
+            observation_reverse,
+            dtype=np.complex128,
+        ),
+        effective_channel_forward=np.asarray(
+            effective_forward,
+            dtype=np.complex128,
+        ),
+        effective_channel_reverse=np.asarray(
+            effective_reverse,
+            dtype=np.complex128,
+        ),
+        forwarded_active_noise_forward=np.asarray(
+            forwarded_forward,
+            dtype=np.complex128,
+        ),
+        forwarded_active_noise_reverse=np.asarray(
+            forwarded_reverse,
+            dtype=np.complex128,
+        ),
+        active_noise_forward=np.asarray(
+            active_noise_forward,
+            dtype=np.complex128,
+        ),
+        active_noise_reverse=np.asarray(
+            active_noise_reverse,
+            dtype=np.complex128,
+        ),
     )
 
 

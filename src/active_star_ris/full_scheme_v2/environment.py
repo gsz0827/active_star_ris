@@ -442,15 +442,41 @@ class RobustFullSchemeEnvironment:
             power=self.config.power,
             amplifier_noise_scale=domain.amplifier_noise_scale,
         )
-        projected_command, projected_power = project_command_to_power_constraints(
-            command,
-            input_c,
-            input_t,
-            input_r,
-            power_config=self.config.power,
-            hardware_config=self._episode_hardware_config,
-            rf_budget=domain.rf_budget,
-            dc_budget=domain.dc_budget,
+        weight_sum = (
+            self.config.objective.transmission_weight
+            + self.config.objective.reflection_weight
+        )
+
+        weight_t = (
+            self.config.objective.transmission_weight
+            / weight_sum
+        )
+        weight_r = (
+            self.config.objective.reflection_weight
+            / weight_sum
+        )
+
+        element_utility = (
+            np.abs(estimate.controller_to_ris)
+            * (
+                weight_t
+                * np.abs(estimate.ris_to_transmission)
+                + weight_r
+                * np.abs(estimate.ris_to_reflection)
+            )
+        )
+        projected_command, projected_power = (
+            project_command_to_power_constraints(
+                command,
+                input_c,
+                input_t,
+                input_r,
+                power_config=self.config.power,
+                hardware_config=self._episode_hardware_config,
+                element_utility=element_utility,
+                rf_budget=domain.rf_budget,
+                dc_budget=domain.dc_budget,
+            )
         )
 
         objective_samples: list[ObjectiveResult] = []
@@ -521,6 +547,9 @@ class RobustFullSchemeEnvironment:
         mean_raw_kdr = average("raw_kdr")
         mean_post_kdr = average("post_reconciliation_kdr")
         mean_reciprocity = average("reciprocity")
+        mean_eve_leakage = average(
+            "eve_leakage_bits_per_sample"
+        )
         mean_power = float(
             np.mean(
                 [sample.power.total_surface_dc_power for sample in objective_samples]
@@ -568,6 +597,9 @@ class RobustFullSchemeEnvironment:
             "raw_kdr": mean_raw_kdr,
             "post_reconciliation_kdr": mean_post_kdr,
             "reciprocity": mean_reciprocity,
+            "eve_leakage_bits_per_sample": (
+                mean_eve_leakage
+            ),
             "surface_dc_power": mean_power,
             "feasibility_rate": feasibility_rate,
             "projection_fully_feasible": projected_power.fully_feasible,

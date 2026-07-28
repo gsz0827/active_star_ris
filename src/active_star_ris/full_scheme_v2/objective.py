@@ -15,6 +15,11 @@ from .models import (
 from .power import evaluate_power
 from .probing import simulate_dual_side_probing
 
+from .channels import correlated_eve_channel
+from .security import (
+    estimate_eve_leakage_bits_per_sample,
+    simulate_eve_branch,
+)
 
 def complex_correlation(a: np.ndarray, b: np.ndarray) -> float:
     x = np.asarray(a, dtype=np.complex128).reshape(-1)
@@ -32,6 +37,60 @@ def complex_correlation(a: np.ndarray, b: np.ndarray) -> float:
     return float(
         np.clip(
             np.abs(np.vdot(x_centered, y_centered)) / denominator,
+            0.0,
+            1.0,
+        )
+    )
+
+
+def feature_correlation(
+    a: np.ndarray,
+    b: np.ndarray,
+    feature: str,
+) -> float:
+    """计算与实际量化特征一致的互易性。"""
+    x_complex = np.asarray(a, dtype=np.complex128).reshape(-1)
+    y_complex = np.asarray(b, dtype=np.complex128).reshape(-1)
+
+    if x_complex.size != y_complex.size or x_complex.size < 2:
+        return 0.0
+
+    if feature == "real":
+        x = x_complex.real
+        y = y_complex.real
+    elif feature == "imag":
+        x = x_complex.imag
+        y = y_complex.imag
+    elif feature == "magnitude":
+        x = np.abs(x_complex)
+        y = np.abs(y_complex)
+    elif feature == "phase":
+        # 相位特征使用圆统计一致性
+        phase_difference = np.angle(
+            np.exp(1j * (np.angle(x_complex) - np.angle(y_complex)))
+        )
+        return float(
+            np.clip(
+                np.abs(np.mean(np.exp(1j * phase_difference))),
+                0.0,
+                1.0,
+            )
+        )
+    else:
+        raise ValueError(f"unsupported feature: {feature}")
+
+    x = x - np.mean(x)
+    y = y - np.mean(y)
+
+    denominator = np.sqrt(
+        np.sum(x**2) * np.sum(y**2)
+    )
+    if denominator <= np.finfo(np.float64).eps:
+        return 0.0
+
+    return float(
+        np.clip(
+            np.abs(np.dot(x, y)) / denominator,
             0.0,
             1.0,
         )
@@ -74,6 +133,262 @@ def evaluate_objective(
         receiver_noise_scale=receiver_noise_scale,
     )
 
+    if config.channel.eve_enabled:
+        rho_eve = (
+            config.channel
+            .eve_spatial_correlation
+        )
+
+        # ====================================================
+        # 透射侧Eve信道
+        # ====================================================
+
+        ris_eve_t_forward = (
+            correlated_eve_channel(
+                block.ris_to_transmission_forward,
+                config.channel
+                .ris_eve_transmission_power,
+                rho_eve,
+                rng,
+            )
+        )
+
+        ris_eve_t_reverse = (
+            correlated_eve_channel(
+                block.transmission_to_ris_reverse,
+                config.channel
+                .ris_eve_transmission_power,
+                rho_eve,
+                rng,
+            )
+        )
+
+        direct_controller_eve_t = (
+            correlated_eve_channel(
+                block.direct_transmission_forward,
+                config.channel
+                .direct_controller_eve_transmission_power,
+                rho_eve,
+                rng,
+            )
+        )
+
+        direct_user_eve_t = (
+            correlated_eve_channel(
+                block.direct_transmission_reverse,
+                config.channel
+                .direct_transmission_user_eve_power,
+                rho_eve,
+                rng,
+            )
+        )
+
+        transmission_eve = simulate_eve_branch(
+            controller_to_ris_forward=(
+                block.controller_to_ris_forward
+            ),
+            user_to_ris_reverse=(
+                block.transmission_to_ris_reverse
+            ),
+            ris_to_eve_forward=(
+                ris_eve_t_forward
+            ),
+            ris_to_eve_reverse=(
+                ris_eve_t_reverse
+            ),
+            direct_controller_to_eve=(
+                direct_controller_eve_t
+            ),
+            direct_user_to_eve=(
+                direct_user_eve_t
+            ),
+            phi_forward=(
+                actual_surface
+                .transmission_forward
+            ),
+            phi_reverse=(
+                actual_surface
+                .transmission_reverse
+            ),
+            active_noise_forward=(
+                probing.transmission
+                .active_noise_forward
+            ),
+            active_noise_reverse=(
+                probing.transmission
+                .active_noise_reverse
+            ),
+            pilot_power_forward=(
+                config.probing
+                .pilot_power_controller
+            ),
+            pilot_power_reverse=(
+                config.probing
+                .pilot_power_transmission_user
+            ),
+            pilot_symbols_forward=(
+                config.probing
+                .pilot_symbols_controller
+            ),
+            pilot_symbols_reverse=(
+                config.probing
+                .pilot_symbols_transmission_user
+            ),
+            receiver_noise_variance=(
+                config.probing
+                .receiver_noise_variance_eve_transmission
+                * receiver_noise_scale
+            ),
+            tx_coefficient_forward=(
+                static_hardware
+                .endpoint_rf
+                .controller_tx
+            ),
+            tx_coefficient_reverse=(
+                static_hardware
+                .endpoint_rf
+                .transmission_tx
+            ),
+            rng=rng,
+        )
+
+        transmission_eve_leakage = (
+            estimate_eve_leakage_bits_per_sample(
+                probing.transmission
+                .observation_forward,
+                probing.transmission
+                .observation_reverse,
+                transmission_eve,
+            )
+        )
+
+        # ====================================================
+        # 反射侧Eve信道
+        # ====================================================
+
+        ris_eve_r_forward = (
+            correlated_eve_channel(
+                block.ris_to_reflection_forward,
+                config.channel
+                .ris_eve_reflection_power,
+                rho_eve,
+                rng,
+            )
+        )
+
+        ris_eve_r_reverse = (
+            correlated_eve_channel(
+                block.reflection_to_ris_reverse,
+                config.channel
+                .ris_eve_reflection_power,
+                rho_eve,
+                rng,
+            )
+        )
+
+        direct_controller_eve_r = (
+            correlated_eve_channel(
+                block.direct_reflection_forward,
+                config.channel
+                .direct_controller_eve_reflection_power,
+                rho_eve,
+                rng,
+            )
+        )
+
+        direct_user_eve_r = (
+            correlated_eve_channel(
+                block.direct_reflection_reverse,
+                config.channel
+                .direct_reflection_user_eve_power,
+                rho_eve,
+                rng,
+            )
+        )
+
+        reflection_eve = simulate_eve_branch(
+            controller_to_ris_forward=(
+                block.controller_to_ris_forward
+            ),
+            user_to_ris_reverse=(
+                block.reflection_to_ris_reverse
+            ),
+            ris_to_eve_forward=(
+                ris_eve_r_forward
+            ),
+            ris_to_eve_reverse=(
+                ris_eve_r_reverse
+            ),
+            direct_controller_to_eve=(
+                direct_controller_eve_r
+            ),
+            direct_user_to_eve=(
+                direct_user_eve_r
+            ),
+            phi_forward=(
+                actual_surface
+                .reflection_forward
+            ),
+            phi_reverse=(
+                actual_surface
+                .reflection_reverse
+            ),
+            active_noise_forward=(
+                probing.reflection
+                .active_noise_forward
+            ),
+            active_noise_reverse=(
+                probing.reflection
+                .active_noise_reverse
+            ),
+            pilot_power_forward=(
+                config.probing
+                .pilot_power_controller
+            ),
+            pilot_power_reverse=(
+                config.probing
+                .pilot_power_reflection_user
+            ),
+            pilot_symbols_forward=(
+                config.probing
+                .pilot_symbols_controller
+            ),
+            pilot_symbols_reverse=(
+                config.probing
+                .pilot_symbols_reflection_user
+            ),
+            receiver_noise_variance=(
+                config.probing
+                .receiver_noise_variance_eve_reflection
+                * receiver_noise_scale
+            ),
+            tx_coefficient_forward=(
+                static_hardware
+                .endpoint_rf
+                .controller_tx
+            ),
+            tx_coefficient_reverse=(
+                static_hardware
+                .endpoint_rf
+                .reflection_tx
+            ),
+            rng=rng,
+        )
+
+        reflection_eve_leakage = (
+            estimate_eve_leakage_bits_per_sample(
+                probing.reflection
+                .observation_forward,
+                probing.reflection
+                .observation_reverse,
+                reflection_eve,
+            )
+        )
+
+    else:
+        transmission_eve_leakage = 0.0
+        reflection_eve_leakage = 0.0
+
     transmission_key = evaluate_key_rate(
         probing.transmission.observation_forward,
         probing.transmission.observation_reverse,
@@ -82,7 +397,11 @@ def evaluate_objective(
         rng=rng,
         full_protocol=full_protocol,
         reverse_pilot_symbols=(
-            config.probing.pilot_symbols_transmission_user
+            config.probing
+            .pilot_symbols_transmission_user
+        ),
+        eve_leakage_bits_per_retained_bit=(
+            transmission_eve_leakage
         ),
     )
     reflection_key = evaluate_key_rate(
@@ -93,7 +412,11 @@ def evaluate_objective(
         rng=rng,
         full_protocol=full_protocol,
         reverse_pilot_symbols=(
-            config.probing.pilot_symbols_reflection_user
+            config.probing
+            .pilot_symbols_reflection_user
+        ),
+        eve_leakage_bits_per_retained_bit=(
+            reflection_eve_leakage
         ),
     )
     weight_sum = (
@@ -102,14 +425,44 @@ def evaluate_objective(
     )
     weight_t = config.objective.transmission_weight / weight_sum
     weight_r = config.objective.reflection_weight / weight_sum
-
-    reciprocity_t = complex_correlation(
+    weighted_eve_leakage = (
+        weight_t
+        * transmission_eve_leakage
+        + weight_r
+        * reflection_eve_leakage
+    )
+    # 复数相关性仅用于高斯互信息代理
+    complex_reciprocity_t = complex_correlation(
         probing.transmission.observation_forward,
         probing.transmission.observation_reverse,
     )
-    reciprocity_r = complex_correlation(
+    complex_reciprocity_r = complex_correlation(
         probing.reflection.observation_forward,
         probing.reflection.observation_reverse,
+    )
+
+    # 奖励中的互易性必须与实际量化特征一致
+    reciprocity_t = feature_correlation(
+        probing.transmission.observation_forward,
+        probing.transmission.observation_reverse,
+        config.key_generation.feature,
+    )
+    reciprocity_r = feature_correlation(
+        probing.reflection.observation_forward,
+        probing.reflection.observation_reverse,
+        config.key_generation.feature,
+    )
+
+    reciprocity = (
+        weight_t * reciprocity_t
+        + weight_r * reciprocity_r
+    )
+
+    theoretical_mi = (
+        weight_t
+        * gaussian_mutual_information(complex_reciprocity_t)
+        + weight_r
+        * gaussian_mutual_information(complex_reciprocity_r)
     )
     reciprocity = weight_t * reciprocity_t + weight_r * reciprocity_r
 
@@ -212,9 +565,10 @@ def evaluate_objective(
     )
 
     rewarded_rate = (
-        training_rate
-        if config.objective.key_rate_mode == "training_bound"
-        else final_rate
+        system_training_rate
+        if config.objective.key_rate_mode
+        == "training_bound"
+        else system_final_rate
     )
     normalized_key_rate = float(
         np.log1p(max(rewarded_rate, 0.0))
@@ -279,6 +633,19 @@ def evaluate_objective(
         reflection_key=reflection_key,
         power=power_result,
         probing=probing,
-        system_training_key_rate_bps=float(system_training_rate),
-        system_final_key_rate_bps=float(system_final_rate),
+        system_training_key_rate_bps=float(
+            system_training_rate
+        ),
+        system_final_key_rate_bps=float(
+            system_final_rate
+        ),
+        transmission_eve_leakage_bits_per_sample=float(
+            transmission_eve_leakage
+        ),
+        reflection_eve_leakage_bits_per_sample=float(
+            reflection_eve_leakage
+        ),
+        eve_leakage_bits_per_sample=float(
+            weighted_eve_leakage
+        ),
     )

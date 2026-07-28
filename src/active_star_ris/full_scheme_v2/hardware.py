@@ -60,12 +60,42 @@ def decode_action(
             config.maximum_active_gain - 1.0
         )
 
-    phase_t = np.mod(np.pi * (phase_t_action + 1.0), 2.0 * np.pi)
+    phase_t = np.mod(
+        np.pi * (phase_t_action + 1.0),
+        2.0 * np.pi,
+    )
+
+    phase_r_independent = np.mod(
+        np.pi * (phase_r_action + 1.0),
+        2.0 * np.pi,
+    )
+
+    branch_sign = np.where(
+        phase_r_action >= 0.0,
+        1.0,
+        -1.0,
+    )
+
+    phase_r_quadrature = np.mod(
+        phase_t + branch_sign * np.pi / 2.0,
+        2.0 * np.pi,
+    )
+
     if config.phase_coupling_mode == "independent":
-        phase_r = np.mod(np.pi * (phase_r_action + 1.0), 2.0 * np.pi)
+        phase_r = phase_r_independent
+    elif config.phase_coupling_mode == "quadrature":
+        phase_r = phase_r_quadrature
+    elif config.phase_coupling_mode == "hybrid":
+        phase_r = np.where(
+            active_mask,
+            phase_r_independent,
+            phase_r_quadrature,
+        )
     else:
-        branch_sign = np.where(phase_r_action >= 0.0, 1.0, -1.0)
-        phase_r = np.mod(phase_t + branch_sign * np.pi / 2.0, 2.0 * np.pi)
+        raise ValueError(
+            f"unsupported phase coupling mode: "
+            f"{config.phase_coupling_mode}"
+        )
 
     beta_t = np.clip(0.5 * (beta_action + 1.0), 0.0, 1.0)
 
@@ -365,17 +395,56 @@ def apply_hardware(
         2.0 * np.pi,
     )
 
+    passive_amplitude_t = 10.0 ** (
+        -config.passive_transmission_insertion_loss_db / 20.0
+    )
+    passive_amplitude_r = 10.0 ** (
+        -config.passive_reflection_insertion_loss_db / 20.0
+    )
+
+    amplitude_t_forward = np.where(
+        active,
+        gain_forward,
+        passive_amplitude_t,
+    )
+    amplitude_r_forward = np.where(
+        active,
+        gain_forward,
+        passive_amplitude_r,
+    )
+    amplitude_t_reverse = np.where(
+        active,
+        gain_reverse,
+        passive_amplitude_t,
+    )
+    amplitude_r_reverse = np.where(
+        active,
+        gain_reverse,
+        passive_amplitude_r,
+    )
+
     transmission_forward = (
-        gain_forward * np.sqrt(beta_t) * np.exp(1j * phase_t_forward)
+        amplitude_t_forward
+        * np.sqrt(beta_t)
+        * np.exp(1j * phase_t_forward)
     )
+
     reflection_forward = (
-        gain_forward * np.sqrt(beta_r) * np.exp(1j * phase_r_forward)
+        amplitude_r_forward
+        * np.sqrt(beta_r)
+        * np.exp(1j * phase_r_forward)
     )
+
     transmission_reverse = (
-        gain_reverse * np.sqrt(beta_t) * np.exp(1j * phase_t_reverse)
+        amplitude_t_reverse
+        * np.sqrt(beta_t)
+        * np.exp(1j * phase_t_reverse)
     )
+
     reflection_reverse = (
-        gain_reverse * np.sqrt(beta_r) * np.exp(1j * phase_r_reverse)
+        amplitude_r_reverse
+        * np.sqrt(beta_r)
+        * np.exp(1j * phase_r_reverse)
     )
 
     return ActualSurfaceCoefficients(

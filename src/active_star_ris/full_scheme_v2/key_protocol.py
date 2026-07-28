@@ -31,6 +31,43 @@ def _binary_entropy(probability: float) -> float:
     return float(-p * log2(p) - (1.0 - p) * log2(1.0 - p))
 
 
+def _empirical_min_entropy_rate(
+    bits: BitArray,
+) -> float:
+    """估计二进制序列的每比特边际最小熵。
+
+    H_min(X) = -log2(max(P(X=0), P(X=1)))
+    """
+    values = np.asarray(
+        bits,
+        dtype=np.uint8,
+    ).reshape(-1)
+
+    if values.size == 0:
+        return 0.0
+
+    probability_one = float(
+        np.mean(values)
+    )
+    probability_zero = 1.0 - probability_one
+
+    maximum_probability = max(
+        probability_zero,
+        probability_one,
+    )
+
+    if maximum_probability <= 0.0:
+        return 0.0
+
+    return float(
+        np.clip(
+            -log2(maximum_probability),
+            0.0,
+            1.0,
+        )
+    )
+
+
 def quantize_with_guard_band(
     observation_a: np.ndarray,
     observation_b: np.ndarray,
@@ -219,8 +256,31 @@ def evaluate_key_rate(
     rng: np.random.Generator,
     full_protocol: bool,
     reverse_pilot_symbols: int | None = None,
+
+    # Eve对每个保留原始比特的信息泄漏代理
+    eve_leakage_bits_per_retained_bit: float = 0.0,
+
+    # 可选：由外部有限长度安全模块给出的
+    # H_min(K_A | Z_E)下界。
+    # 一旦传入，该值已经包含Eve条件信息，
+    # 因此不得再次扣除eve_leakage。
+    conditional_min_entropy_bits: int | None = None,
 ) -> KeyRateResult:
     key_config.validate()
+    if eve_leakage_bits_per_retained_bit < 0.0:
+        raise ValueError(
+            "eve_leakage_bits_per_retained_bit "
+            "cannot be negative"
+        )
+
+    if (
+        conditional_min_entropy_bits is not None
+        and conditional_min_entropy_bits < 0
+    ):
+        raise ValueError(
+            "conditional_min_entropy_bits "
+            "cannot be negative"
+        )
     if reverse_pilot_symbols is None:
         reverse_pilot_symbols = (
             probing_config.pilot_symbols_controller
@@ -253,6 +313,7 @@ def evaluate_key_rate(
             raw_kdr=1.0,
             post_reconciliation_kdr=1.0,
             estimated_entropy_bits=0,
+            eve_leakage_bits=0,
             reconciliation_leakage_bits=0,
             verification_leakage_bits=0,
             public_communication_bits=selection_bits,
@@ -265,9 +326,71 @@ def evaluate_key_rate(
             success=False,
         )
 
-    entropy_bits = floor(
-        retained * key_config.minimum_entropy_bits_per_retained_bit
+    bounded_eve_leakage_rate = float(
+        np.clip(
+            eve_leakage_bits_per_retained_bit,
+            0.0,
+            1.0,
+        )
     )
+
+    eve_leakage_bits = int(
+        ceil(
+            retained
+            * bounded_eve_leakage_rate
+        )
+    )
+
+    if full_protocol:
+        if conditional_min_entropy_bits is not None:
+            # 外部输入已经是H_min(K_A | Z_E)，
+            # 不再重复扣除Eve泄漏。
+            entropy_bits = int(
+                np.clip(
+                    conditional_min_entropy_bits,
+                    0,
+                    retained,
+                )
+            )
+        else:
+            # 当前的过渡性最终评估代理：
+            # 先根据实际原始比特偏置估计边际最小熵，
+            # 再扣除Eve互信息代理。
+            #
+            # 注意：这不是严格的平滑条件最小熵证明。
+            empirical_entropy_rate = (
+                _empirical_min_entropy_rate(
+                    bits_a
+                )
+            )
+
+            marginal_entropy_bits = int(
+                floor(
+                    retained
+                    * empirical_entropy_rate
+                )
+            )
+
+            entropy_bits = max(
+                0,
+                marginal_entropy_bits
+                - eve_leakage_bits,
+            )
+    else:
+        # 训练阶段才允许使用固定0.8熵率代理。
+        training_marginal_entropy_bits = int(
+            floor(
+                retained
+                * key_config
+                .minimum_entropy_bits_per_retained_bit
+            )
+        )
+
+        entropy_bits = max(
+            0,
+            training_marginal_entropy_bits
+            - eve_leakage_bits,
+        )
 
     if full_protocol:
         corrected_b, parity_leakage, post_kdr, verified = cascade_reconcile(
@@ -349,6 +472,7 @@ def evaluate_key_rate(
         raw_kdr=float(raw_kdr),
         post_reconciliation_kdr=float(post_kdr),
         estimated_entropy_bits=int(entropy_bits),
+        timated_entropy_bits=int(entropy_bits),
         reconciliation_leakage_bits=int(parity_leakage),
         verification_leakage_bits=int(verification_leakage),
         public_communication_bits=int(public_bits),
