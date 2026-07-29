@@ -289,6 +289,48 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
+### 4.4 检查 PyTorch 是否使用 GPU
+
+运行：
+
+```powershell
+python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA 可用:', torch.cuda.is_available()); print('PyTorch CUDA:', torch.version.cuda); print('设备:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+正常的 CUDA 环境应显示：
+
+```text
+CUDA 可用: True
+设备: <显卡名称>
+```
+
+训练开始时，终端进度日志还会显示：
+
+```text
+device=cuda
+```
+
+这表示 TD3 的 Actor、Critic 和优化器正在使用 GPU。
+
+可以在另一个 PowerShell 窗口中持续查看 GPU 状态：
+
+```powershell
+nvidia-smi -l 1
+```
+
+在 Windows 任务管理器中，建议查看：
+
+```text
+性能 → GPU → CUDA 或 Compute_0
+```
+
+而不是只查看默认的 3D 图表。
+
+需要注意，当前实现中的信道生成、STAR-RIS 硬件失配、功率投影、
+双向探测和密钥指标主要由 NumPy 在 CPU 上计算；GPU 主要负责 TD3
+神经网络推理与训练。因此，即使日志显示 `device=cuda`，GPU 利用率
+仍可能较低或呈间歇性波动，这并不一定表示 CUDA 没有生效。
+
 ---
 
 ## 5. 覆盖代码后的完整检查
@@ -408,6 +450,8 @@ python scripts/train_full_scheme_v2.py --config configs/full_scheme_v2_paper.yam
 ```
 
 ### 6.5 训练和评估进度显示
+
+训练开始日志中的 `device=cuda` 或 `device=cpu` 表示 TD3 实际使用的计算设备。
 
 多架构实验运行时，终端会显示：
 
