@@ -135,7 +135,12 @@ channel:
 
 ### 2.5 有源噪声和功率模型
 
-有源单元内部噪声从输入端注入，经有源系数和后续信道传播至 Alice、Bob 和 Eve。正向与反向内部噪声实现相互独立。
+有源单元内部噪声从输入端注入，经有源系数和后续信道传播至 Alice、Bob 和 Eve。
+
+在同一次正向探测中，Bob 与 Eve 共用同一个 STAR-RIS 内部噪声源，
+但该噪声分别经过 Bob 和 Eve 的下游信道传播；在同一次反向探测中，
+Alice 与 Eve 同样共用对应的内部噪声源。正向和反向位于不同时隙，
+因此两次内部噪声实现相互独立。
 
 功率约束同时考虑：
 
@@ -262,6 +267,12 @@ PowerShell 若禁止执行激活脚本，可临时运行：
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
+
+也可以直接双击仓库根目录的：
+
+```text
+start_here.bat
+
 ```
 
 ### 4.3 Linux / macOS
@@ -335,6 +346,10 @@ python scripts/run_full_scheme_experiments_v2.py --config configs/full_scheme_v2
 
 ### 6.3 正式多架构、多种子实验
 
+最终评价不会只使用 episode 初始的全零历史状态。每个评价回合会先运行
+`episode_length - 1` 个代理协议 burn-in 步骤，使时变信道和上一时隙
+性能摘要进入智能体状态，再在最终时隙执行完整密钥协议评价。
+
 ```bash
 python scripts/run_full_scheme_experiments_v2.py --config configs/full_scheme_v2_paper.yaml --output-dir results/full_scheme_v2/paper
 ```
@@ -387,6 +402,24 @@ fully_active_fixed
 ```bash
 python scripts/train_full_scheme_v2.py --config configs/full_scheme_v2_paper.yaml --architecture partially_active_fixed --smoke --steps 20 --output-dir results/full_scheme_v2/train_smoke
 ```
+
+```markdown
+### 6.5 训练和评估进度显示
+
+多架构实验运行时，终端会显示：
+
+- 当前总任务编号，例如 `总任务 3/32`；
+- 当前架构和随机种子；
+- 训练完成步数和百分比；
+- reward、安全密钥率、原始 KDR 和表面功耗；
+- Critic 和 Actor 损失；
+- 当前训练速度与预计剩余时间；
+- 最终协议评估回合进度。
+
+训练进度间隔由：
+
+```python
+progress_interval = max(1, steps // 100)
 
 ---
 
@@ -460,7 +493,13 @@ results/full_scheme_v2/paper/
 
 ### 8.1 `training_history.csv`
 
-每 100 个环境步或训练结束时保存一次：
+训练过程中每 100 个环境步记录一条历史数据到内存，并在当前
+“架构 × 种子”的全部训练完成后统一写入 `training_history.csv`。
+训练结束时同时保存 `td3_checkpoint.pt`。
+
+当前版本尚未实现完整的周期检查点和断点续训。如果在一个模型训练
+完成前中断程序，该模型尚未写出的训练历史和最终检查点可能丢失；
+已经完成并写入目录的其他架构或种子结果不会受影响。
 
 | 字段 | 含义 |
 |---|---|
@@ -510,7 +549,7 @@ results/full_scheme_v2/paper/
 | `mean_raw_kdr` | 越低越好 | 信息协调前 Alice 与 Bob 量化比特的不一致比例 |
 | `mean_reciprocity` | 越高越好 | 双向观测的复相关幅值 |
 | `mean_surface_power_watt` | 越低越好 | STAR-RIS 平均总 DC 功耗 |
-| `power_violation_probability` | 越低越好 | 鲁棒样本中出现 RF 或 DC 约束违反的比例 |
+| `power_violation_probability` | 越低越好 | 鲁棒样本中出现总 RF 输出、总 DC 功耗或单个有源单元饱和功率违反的比例 |
 | `mean_active_elements` | 视架构而定 | 实际有源单元数量 |
 | `mean_projection_scale` | 越接近 1 越好 | 请求增益经功率投影后的保留比例 |
 | `cvar_*` | 关注尾部 | 低奖励尾部样本对应的鲁棒性能 |

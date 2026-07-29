@@ -172,8 +172,6 @@ def train_td3(
     )
 
     return agent, history
-    write_csv(output / "training_history.csv", history)
-    return agent, history
 
 
 def evaluate_policy(
@@ -274,14 +272,14 @@ def evaluate_policy(
                 f"耗时={elapsed_seconds / 60.0:.1f} min",
                 flush=True,
             ) 
-        print(
-            f"[评估完成] "
-            f"architecture={config.environment.architecture}, "
-            f"episodes={episodes}, "
-            f"耗时="
-            f"{(time.perf_counter() - evaluation_start_time) / 60.0:.1f} min",
-            flush=True,
-        )
+    print(
+        f"[评估完成] "
+        f"architecture={config.environment.architecture}, "
+        f"episodes={episodes}, "
+        f"耗时="
+        f"{(time.perf_counter() - evaluation_start_time) / 60.0:.1f} min",
+        flush=True,
+    )
     return rows
 
 
