@@ -148,9 +148,16 @@ class ActiveStarRisKeyEnvironment:
             coefficients.actual_gain_reverse,
             projected.active_mask,
             self.config.probing,
+            self.config.hardware,
             self.config.power,
         )
-        reward = objective_reward(key_metrics, power_metrics, self.config.objective)
+        reward = objective_reward(
+            key_metrics,
+            power_metrics,
+            self.config.objective,
+            power_config=self.config.power,
+            hardware_config=self.config.hardware,
+        )
         return ObjectiveSample(
             reward=reward,
             key_metrics=key_metrics,

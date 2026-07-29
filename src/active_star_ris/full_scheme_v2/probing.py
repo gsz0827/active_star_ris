@@ -7,18 +7,44 @@ from .config import ChannelConfig, ProbingConfig
 from .models import BranchObservations, DirectionalSurfaceCoefficients, StaticChannels
 
 
-def _active_noise(
-    downstream: np.ndarray,
-    coefficients: np.ndarray,
+def _sample_active_noise_source(
+    samples: int,
+    elements: int,
     active_mask: np.ndarray,
     variance: float,
     rng: np.random.Generator,
 ) -> np.ndarray:
+    """Generate one input-referred RIS noise realization."""
+
     if variance <= 0.0 or not np.any(active_mask):
-        return np.zeros(downstream.shape[0], dtype=np.complex128)
-    source = complex_normal(rng, downstream.shape) * np.sqrt(variance)
+        return np.zeros(
+            (samples, elements),
+            dtype=np.complex128,
+        )
+
+    source = (
+        complex_normal(rng, (samples, elements))
+        * np.sqrt(variance)
+    )
     source[:, ~active_mask] = 0.0
-    return np.sum(downstream * coefficients * source, axis=1)
+
+    return np.asarray(source, dtype=np.complex128)
+
+
+def _forward_active_noise(
+    downstream: np.ndarray,
+    coefficients: np.ndarray,
+    source: np.ndarray,
+) -> np.ndarray:
+    """Propagate a shared RIS noise source to one receiver."""
+
+    return np.asarray(
+        np.sum(
+            downstream * coefficients * source,
+            axis=1,
+        ),
+        dtype=np.complex128,
+    )
 
 
 def _receiver_noise(samples: int, variance: float, rng: np.random.Generator) -> np.ndarray:
@@ -62,20 +88,40 @@ def simulate_branch(
 
     effective_forward = direct_forward + np.sum(h_forward * coefficients_forward * g_forward, axis=1)
     effective_reverse = direct_reverse + np.sum(g_reverse * coefficients_reverse * h_reverse, axis=1)
-    active_noise_bob = _active_noise(
+    elements = active_mask.size
+
+    active_noise_source_forward = (
+        _sample_active_noise_source(
+            samples,
+            elements,
+            active_mask,
+            amplifier_noise_variance,
+            rng,
+        )
+    )
+
+    active_noise_source_reverse = (
+        _sample_active_noise_source(
+            samples,
+            elements,
+            active_mask,
+            amplifier_noise_variance,
+            rng,
+        )
+    )
+
+    active_noise_bob = _forward_active_noise(
         h_forward,
         coefficients_forward,
-        active_mask,
-        amplifier_noise_variance,
-        rng,
+        active_noise_source_forward,
     )
-    active_noise_alice = _active_noise(
+
+    active_noise_alice = _forward_active_noise(
         g_reverse,
         coefficients_reverse,
-        active_mask,
-        amplifier_noise_variance,
-        rng,
+        active_noise_source_reverse,
     )
+
     observation_bob = (
         np.sqrt(pilot_power_controller) * effective_forward
         + active_noise_bob
@@ -91,19 +137,16 @@ def simulate_branch(
     direct_eve_r = evolve_block(np.asarray(direct_user_eve), samples, within, rng).reshape(-1)
     eve_effective_forward = direct_eve_f + np.sum(e_forward * coefficients_forward * g_forward, axis=1)
     eve_effective_reverse = direct_eve_r + np.sum(e_reverse * coefficients_reverse * h_reverse, axis=1)
-    active_noise_eve_f = _active_noise(
+    active_noise_eve_f = _forward_active_noise(
         e_forward,
         coefficients_forward,
-        active_mask,
-        amplifier_noise_variance,
-        rng,
+        active_noise_source_forward,
     )
-    active_noise_eve_r = _active_noise(
+
+    active_noise_eve_r = _forward_active_noise(
         e_reverse,
         coefficients_reverse,
-        active_mask,
-        amplifier_noise_variance,
-        rng,
+        active_noise_source_reverse,
     )
     observation_eve_forward = (
         np.sqrt(pilot_power_controller) * eve_effective_forward

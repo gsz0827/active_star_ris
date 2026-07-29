@@ -188,6 +188,37 @@ def sample_static_channels(
         eve_t = np.zeros_like(transmission)
         eve_r = np.zeros_like(reflection)
 
+    if channel.eve_enabled:
+        direct_controller_eve_transmission = direct_scalar(
+            geometry.controller_position_m,
+            geometry.eve_transmission_position_m,
+            geometry=geometry,
+            rng=rng,
+        )
+        direct_user_eve_transmission = direct_scalar(
+            geometry.transmission_user_position_m,
+            geometry.eve_transmission_position_m,
+            geometry=geometry,
+            rng=rng,
+        )
+        direct_controller_eve_reflection = direct_scalar(
+            geometry.controller_position_m,
+            geometry.eve_reflection_position_m,
+            geometry=geometry,
+            rng=rng,
+        )
+        direct_user_eve_reflection = direct_scalar(
+            geometry.reflection_user_position_m,
+            geometry.eve_reflection_position_m,
+            geometry=geometry,
+            rng=rng,
+        )
+    else:
+        direct_controller_eve_transmission = 0.0j
+        direct_user_eve_transmission = 0.0j
+        direct_controller_eve_reflection = 0.0j
+        direct_user_eve_reflection = 0.0j
+
     return StaticChannels(
         controller_ris=controller,
         ris_transmission=transmission,
@@ -206,29 +237,17 @@ def sample_static_channels(
             geometry=geometry,
             rng=rng,
         ),
-        direct_controller_eve_transmission=direct_scalar(
-            geometry.controller_position_m,
-            geometry.eve_transmission_position_m,
-            geometry=geometry,
-            rng=rng,
+        direct_controller_eve_transmission=(
+            direct_controller_eve_transmission
         ),
-        direct_user_eve_transmission=direct_scalar(
-            geometry.transmission_user_position_m,
-            geometry.eve_transmission_position_m,
-            geometry=geometry,
-            rng=rng,
+        direct_user_eve_transmission=(
+            direct_user_eve_transmission
         ),
-        direct_controller_eve_reflection=direct_scalar(
-            geometry.controller_position_m,
-            geometry.eve_reflection_position_m,
-            geometry=geometry,
-            rng=rng,
+        direct_controller_eve_reflection=(
+            direct_controller_eve_reflection
         ),
-        direct_user_eve_reflection=direct_scalar(
-            geometry.reflection_user_position_m,
-            geometry.eve_reflection_position_m,
-            geometry=geometry,
-            rng=rng,
+        direct_user_eve_reflection=(
+            direct_user_eve_reflection
         ),
     )
 
@@ -239,6 +258,10 @@ def gauss_markov_update(
     rng: np.random.Generator,
 ) -> np.ndarray:
     current = np.asarray(value, dtype=np.complex128)
+
+    if not np.any(current):
+        return np.zeros_like(current)
+
     rho = float(np.clip(correlation, 0.0, 1.0))
     power = max(float(np.mean(np.abs(current) ** 2)), 1.0e-30)
     innovation = complex_normal(rng, current.shape) * np.sqrt(power)
@@ -281,7 +304,10 @@ def estimate_channel(
     rng: np.random.Generator,
 ) -> CSIResult:
     h = np.asarray(true_channel, dtype=np.complex128)
-    if config.control_csi_model == "nmse_oracle":
+    if config.control_csi_model in {
+        "nmse",
+        "nmse_oracle",
+    }:
         signal_power = float(np.mean(np.abs(h) ** 2))
         error_variance = signal_power * 10.0 ** (config.control_csi_nmse_db / 10.0)
         error = complex_normal(rng, h.shape) * np.sqrt(error_variance)

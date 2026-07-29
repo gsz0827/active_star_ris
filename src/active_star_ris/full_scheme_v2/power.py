@@ -179,23 +179,78 @@ def actual_power_metrics(
     gain_reverse: np.ndarray,
     active: np.ndarray,
     probing: ProbingConfig,
+    hardware: HardwareConfig,
     power: PowerConfig,
 ) -> PowerMetrics:
     controller_incident = probing.pilot_power_controller * np.abs(channels.controller_ris) ** 2 + probing.input_referred_amplifier_noise_variance
     transmission_incident = probing.pilot_power_transmission_user * np.abs(channels.ris_transmission) ** 2 + probing.input_referred_amplifier_noise_variance
     reflection_incident = probing.pilot_power_reflection_user * np.abs(channels.ris_reflection) ** 2 + probing.input_referred_amplifier_noise_variance
-    rf_controller = float(np.sum(np.where(active, gain_forward**2 * controller_incident, 0.0)))
-    rf_transmission = float(np.sum(np.where(active, gain_reverse**2 * transmission_incident, 0.0)))
-    rf_reflection = float(np.sum(np.where(active, gain_reverse**2 * reflection_incident, 0.0)))
-    average_gain = np.maximum(0.5 * (gain_forward + gain_reverse), 1.0)
+
+    controller_per_element = np.where(
+        active,
+        gain_forward**2 * controller_incident,
+        0.0,
+    )
+    transmission_per_element = np.where(
+        active,
+        gain_reverse**2 * transmission_incident,
+        0.0,
+    )
+    reflection_per_element = np.where(
+        active,
+        gain_reverse**2 * reflection_incident,
+        0.0,
+    )
+
+    rf_controller = float(np.sum(controller_per_element))
+    rf_transmission = float(np.sum(transmission_per_element))
+    rf_reflection = float(np.sum(reflection_per_element))
+
+    average_gain = np.maximum(
+        0.5 * (gain_forward + gain_reverse),
+        1.0,
+    )
+
     dc = _total_dc_power(
         average_gain,
         active,
-        (controller_incident, transmission_incident, reflection_incident),
+        (
+            controller_incident,
+            transmission_incident,
+            reflection_incident,
+        ),
         power,
     )
-    rf_violation = max(0.0, max(rf_controller, rf_transmission, rf_reflection) - power.maximum_rf_output_power)
-    dc_violation = max(0.0, dc - power.maximum_total_dc_power)
+
+    maximum_element_output = float(
+        max(
+            np.max(controller_per_element),
+            np.max(transmission_per_element),
+            np.max(reflection_per_element),
+        )
+    )
+
+    rf_violation = max(
+        0.0,
+        max(
+            rf_controller,
+            rf_transmission,
+            rf_reflection,
+        )
+        - power.maximum_rf_output_power,
+    )
+
+    dc_violation = max(
+        0.0,
+        dc - power.maximum_total_dc_power,
+    )
+
+    saturation_violation = max(
+        0.0,
+        maximum_element_output
+        - hardware.per_active_element_saturation_power,
+    )
+
     return PowerMetrics(
         rf_output_controller=rf_controller,
         rf_output_transmission=rf_transmission,
@@ -203,5 +258,10 @@ def actual_power_metrics(
         total_dc_power=dc,
         rf_violation=rf_violation,
         dc_violation=dc_violation,
-        any_violation=(rf_violation > 0.0 or dc_violation > 0.0),
+        saturation_violation=saturation_violation,
+        any_violation=(
+            rf_violation > 0.0
+            or dc_violation > 0.0
+            or saturation_violation > 0.0
+        ),
     )

@@ -65,6 +65,28 @@ def _quantize(values: FloatArray, minimum: float, maximum: float, bits: int | No
     return np.asarray(minimum + np.round((clipped - minimum) / step) * step, dtype=np.float64)
 
 
+def _quantize_phase(
+    values: FloatArray,
+    bits: int | None,
+) -> FloatArray:
+    """Quantize circular phases into exactly 2**bits states."""
+
+    wrapped = np.mod(values, 2.0 * np.pi)
+
+    if bits is None:
+        return np.asarray(wrapped, dtype=np.float64)
+
+    levels = 2**bits
+    step = 2.0 * np.pi / levels
+
+    quantized = np.round(wrapped / step) * step
+
+    return np.asarray(
+        np.mod(quantized, 2.0 * np.pi),
+        dtype=np.float64,
+    )
+
+
 def decode_action(
     action: ArrayLike,
     *,
@@ -88,11 +110,13 @@ def decode_action(
     gain = np.where(active_mask, requested_gain, 1.0)
     phase_t = np.mod(np.pi * (phase_t_raw + 1.0), 2.0 * np.pi)
     phase_r_independent = np.mod(np.pi * (phase_r_raw + 1.0), 2.0 * np.pi)
-    phase_t = _quantize(phase_t, 0.0, 2.0 * np.pi, config.phase_quantization_bits)
-    phase_r_independent = _quantize(
+    phase_t = _quantize_phase(
+        phase_t,
+        config.phase_quantization_bits,
+    )
+
+    phase_r_independent = _quantize_phase(
         phase_r_independent,
-        0.0,
-        2.0 * np.pi,
         config.phase_quantization_bits,
     )
     coupled = np.mod(phase_t + np.pi / 2.0, 2.0 * np.pi)

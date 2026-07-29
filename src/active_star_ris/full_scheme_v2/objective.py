@@ -4,7 +4,12 @@ import math
 
 import numpy as np
 
-from .config import ObjectiveConfig, RobustConfig
+from .config import (
+    HardwareConfig,
+    ObjectiveConfig,
+    PowerConfig,
+    RobustConfig,
+)
 from .models import JointKeyMetrics, ObjectiveSample, PowerMetrics, RobustSummary
 
 
@@ -12,6 +17,9 @@ def objective_reward(
     key_metrics: JointKeyMetrics,
     power_metrics: PowerMetrics,
     config: ObjectiveConfig,
+    *,
+    power_config: PowerConfig,
+    hardware_config: HardwareConfig,
 ) -> float:
     key_term = key_metrics.weighted_secure_key_rate_bps / config.key_rate_reference_bps
     raw_kdr_term = key_metrics.weighted_raw_kdr / config.raw_kdr_reference
@@ -20,9 +28,23 @@ def objective_reward(
         / config.post_reconciliation_kdr_reference
     )
     power_term = power_metrics.total_dc_power / config.surface_power_reference_watt
+    rf_scale = max(
+        power_config.maximum_rf_output_power,
+        1.0e-30,
+    )
+    dc_scale = max(
+        power_config.maximum_total_dc_power,
+        1.0e-30,
+    )
+    saturation_scale = max(
+        hardware_config.per_active_element_saturation_power,
+        1.0e-30,
+    )
+
     normalized_violation = (
-        power_metrics.rf_violation / max(power_metrics.rf_output_controller, 1.0)
-        + power_metrics.dc_violation / config.surface_power_reference_watt
+        power_metrics.rf_violation / rf_scale
+        + power_metrics.dc_violation / dc_scale
+        + power_metrics.saturation_violation / saturation_scale
     )
     return float(
         config.key_rate_weight * key_term

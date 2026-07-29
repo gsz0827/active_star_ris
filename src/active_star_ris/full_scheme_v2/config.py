@@ -15,7 +15,12 @@ Architecture = Literal[
 ]
 FeatureName = Literal["real", "imag", "magnitude", "phase"]
 SelectionPolicy = Literal["alice", "intersection"]
-CSIModel = Literal["ls", "lmmse", "nmse_oracle"]
+CSIModel = Literal[
+    "ls",
+    "lmmse",
+    "nmse",
+    "nmse_oracle",
+]
 
 
 @dataclass(frozen=True)
@@ -90,7 +95,12 @@ class ChannelConfig:
             raise ValueError("forward_reverse_delay_seconds cannot be negative")
         if self.channel_coherence_time_seconds <= 0.0:
             raise ValueError("channel_coherence_time_seconds must be positive")
-        if self.control_csi_model not in {"ls", "lmmse", "nmse_oracle"}:
+        if self.control_csi_model not in {
+            "ls",
+            "lmmse",
+            "nmse",
+            "nmse_oracle",
+        }:
             raise ValueError("invalid control_csi_model")
         if self.csi_pilot_symbols < 1 or self.csi_pilot_power <= 0.0:
             raise ValueError("CSI pilot length and power must be positive")

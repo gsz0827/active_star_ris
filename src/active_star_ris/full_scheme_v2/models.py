@@ -127,6 +127,7 @@ class PowerMetrics:
     total_dc_power: float
     rf_violation: float
     dc_violation: float
+    saturation_violation: float
     any_violation: bool
 
 

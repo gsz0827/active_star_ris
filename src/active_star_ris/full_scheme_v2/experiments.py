@@ -108,7 +108,30 @@ def evaluate_policy(
     rows: list[dict[str, float | str]] = []
     for episode in range(episodes):
         state, _ = env.reset(seed=seed + episode)
+
+        # 先运行代理协议，使上一时隙指标和时变信道进入状态。
+        burn_in_steps = max(
+            env.config.environment.episode_length - 1,
+            0,
+        )
+
+        for _ in range(burn_in_steps):
+            action = policy(state)
+
+            (
+                state,
+                _,
+                terminated,
+                truncated,
+                _,
+            ) = env.step(action)
+
+            if terminated or truncated:
+                break
+
+        # 在具有历史状态的最终时隙执行正式协议评价。
         action = policy(state)
+
         summary = env.evaluate_action(
             action,
             full_protocol=full_protocol,
