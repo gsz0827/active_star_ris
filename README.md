@@ -267,13 +267,17 @@ PowerShell 若禁止执行激活脚本，可临时运行：
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
+```
 
 也可以直接双击仓库根目录的：
 
 ```text
 start_here.bat
-
 ```
+
+该脚本会自动创建 `.venv`、安装依赖和当前项目，并运行
+`python scripts/run_all_checks_v2.py`。它只用于环境安装和完整检查，
+不会自动启动正式训练实验。
 
 ### 4.3 Linux / macOS
 
@@ -403,7 +407,6 @@ fully_active_fixed
 python scripts/train_full_scheme_v2.py --config configs/full_scheme_v2_paper.yaml --architecture partially_active_fixed --smoke --steps 20 --output-dir results/full_scheme_v2/train_smoke
 ```
 
-```markdown
 ### 6.5 训练和评估进度显示
 
 多架构实验运行时，终端会显示：
@@ -420,6 +423,19 @@ python scripts/train_full_scheme_v2.py --config configs/full_scheme_v2_paper.yam
 
 ```python
 progress_interval = max(1, steps // 100)
+```
+
+确定，因此每个模型大约显示 100 次训练进度。例如正式实验为
+100000 步时，约每 1000 步显示一次。
+
+评估进度间隔由：
+
+```python
+evaluation_interval = max(1, episodes // 10)
+```
+
+确定，因此每个模型大约显示 10 次评估进度。例如正式评价为
+100 个回合时，约每 10 个回合显示一次。
 
 ---
 
