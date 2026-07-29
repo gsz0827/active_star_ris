@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import csv
 import json
 from dataclasses import asdict, replace
@@ -64,6 +65,25 @@ def train_td3(
     )
     rng = np.random.default_rng(seed)
     history: list[dict[str, float]] = []
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+
+    start_time = time.perf_counter()
+
+    # 每个模型大约输出 100 次进度。
+    progress_interval = max(1, steps // 100)
+
+    print(
+        "\n"
+        f"[训练开始] "
+        f"architecture={config.environment.architecture}, "
+        f"seed={seed}, "
+        f"steps={steps}, "
+        f"device={agent.device}",
+        flush=True,
+    )
+
     for step in range(steps):
         if step < config.td3.warmup_steps:
             action = rng.uniform(-1.0, 1.0, env.action_dimension).astype(np.float32)
@@ -73,6 +93,55 @@ def train_td3(
         done = terminated or truncated
         replay.add(state, action, reward, next_state, done)
         losses = agent.train(replay)
+        completed_steps = step + 1
+
+        if (
+            completed_steps == 1
+            or completed_steps % progress_interval == 0
+            or completed_steps == steps
+        ):
+            elapsed_seconds = time.perf_counter() - start_time
+
+            steps_per_second = (
+                completed_steps / max(elapsed_seconds, 1.0e-12)
+            )
+
+            remaining_seconds = (
+                (steps - completed_steps)
+                / max(steps_per_second, 1.0e-12)
+            )
+
+            critic_text = (
+                f"{losses.critic_loss:.6g}"
+                if losses is not None
+                else "warmup"
+            )
+
+            actor_text = (
+                f"{losses.actor_loss:.6g}"
+                if (
+                    losses is not None
+                    and losses.actor_loss is not None
+                )
+                else "-"
+            )
+
+            print(
+                f"[训练进度] "
+                f"{config.environment.architecture} "
+                f"seed={seed} | "
+                f"{completed_steps}/{steps} "
+                f"({100.0 * completed_steps / steps:6.2f}%) | "
+                f"reward={reward:.5f} | "
+                f"key_rate={info['mean_secure_key_rate_bps']:.3f} | "
+                f"raw_kdr={info['mean_raw_kdr']:.5f} | "
+                f"power={info['mean_surface_power_watt']:.6g} W | "
+                f"critic={critic_text} | "
+                f"actor={actor_text} | "
+                f"速度={steps_per_second:.3f} step/s | "
+                f"预计剩余={remaining_seconds / 60.0:.1f} min",
+                flush=True,
+            )
         if step % 100 == 0 or step == steps - 1:
             row = {
                 "step": float(step),
@@ -88,9 +157,21 @@ def train_td3(
         state = next_state
         if done:
             state, _ = env.reset()
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
     agent.save(output / "td3_checkpoint.pt")
+    write_csv(output / "training_history.csv", history)
+
+    total_seconds = time.perf_counter() - start_time
+
+    print(
+        f"[训练完成] "
+        f"architecture={config.environment.architecture}, "
+        f"seed={seed}, "
+        f"耗时={total_seconds / 60.0:.1f} min, "
+        f"输出={output}",
+        flush=True,
+    )
+
+    return agent, history
     write_csv(output / "training_history.csv", history)
     return agent, history
 
@@ -106,6 +187,19 @@ def evaluate_policy(
 ) -> list[dict[str, float | str]]:
     env = ActiveStarRisKeyEnvironment(replace(config, environment=replace(config.environment, seed=seed)))
     rows: list[dict[str, float | str]] = []
+
+    evaluation_start_time = time.perf_counter()
+    evaluation_interval = max(1, episodes // 10)
+
+    print(
+        f"[评估开始] "
+        f"architecture={config.environment.architecture}, "
+        f"seed={seed}, "
+        f"episodes={episodes}, "
+        f"objective_samples={objective_samples}",
+        flush=True,
+    )
+
     for episode in range(episodes):
         state, _ = env.reset(seed=seed + episode)
 
@@ -158,6 +252,36 @@ def evaluate_policy(
                 "mean_projection_scale": summary.mean_projection_scale,
             }
         )
+        completed_episodes = episode + 1
+
+        if (
+            completed_episodes == 1
+            or completed_episodes % evaluation_interval == 0
+            or completed_episodes == episodes
+        ):
+            elapsed_seconds = (
+                time.perf_counter() - evaluation_start_time
+            )
+
+            print(
+                f"[评估进度] "
+                f"{config.environment.architecture} | "
+                f"{completed_episodes}/{episodes} "
+                f"({100.0 * completed_episodes / episodes:6.2f}%) | "
+                f"reward={summary.robust_reward:.5f} | "
+                f"key_rate={summary.mean_secure_key_rate_bps:.3f} | "
+                f"raw_kdr={summary.mean_raw_kdr:.5f} | "
+                f"耗时={elapsed_seconds / 60.0:.1f} min",
+                flush=True,
+            ) 
+        print(
+            f"[评估完成] "
+            f"architecture={config.environment.architecture}, "
+            f"episodes={episodes}, "
+            f"耗时="
+            f"{(time.perf_counter() - evaluation_start_time) / 60.0:.1f} min",
+            flush=True,
+        )
     return rows
 
 
@@ -205,8 +329,33 @@ def run_architecture_suite(
 ) -> list[dict[str, float | str]]:
     output = Path(output_dir)
     all_summaries: list[dict[str, float | str]] = []
+
+    total_runs = (
+        len(config.experiment.architectures)
+        * len(seeds)
+    )
+    run_number = 0
+
+    print(
+        f"[实验套件开始] "
+        f"总任务数={total_runs}, "
+        f"每个任务训练步数={training_steps}, "
+        f"每个任务评估回合={evaluation_episodes}",
+        flush=True,
+    )
+
     for architecture in config.experiment.architectures:
         for seed in seeds:
+            run_number += 1
+
+            print(
+                "\n"
+                f"{'=' * 72}\n"
+                f"[总任务 {run_number}/{total_runs}] "
+                f"architecture={architecture}, seed={seed}\n"
+                f"{'=' * 72}",
+                flush=True,
+            )
             architecture_config = replace(
                 config,
                 environment=replace(config.environment, architecture=architecture, seed=seed),
