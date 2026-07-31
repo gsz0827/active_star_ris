@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import csv
 import json
+import math
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Callable
@@ -11,6 +12,7 @@ import numpy as np
 
 from .config import FullSchemeConfig
 from .environment import ActiveStarRisKeyEnvironment
+from .models import ObjectiveSample
 from .td3 import ReplayBuffer, TD3Agent
 
 
@@ -177,6 +179,100 @@ def train_td3(
     return agent, history
 
 
+def _branch_protocol_diagnostics(
+    samples: list[ObjectiveSample],
+    branch_name: str,
+    config: FullSchemeConfig,
+) -> dict[str, float]:
+    """Aggregate finite-key protocol diagnostics for one STAR-RIS side."""
+    if branch_name not in {"transmission", "reflection"}:
+        raise ValueError(f"unsupported branch: {branch_name}")
+    if not samples:
+        raise ValueError("protocol diagnostics require at least one sample")
+
+    branches = [getattr(sample.key_metrics, branch_name) for sample in samples]
+    retained = np.asarray([branch.retained_bits for branch in branches], dtype=np.float64)
+    eve_information = np.asarray(
+        [branch.eve_information for branch in branches],
+        dtype=np.float64,
+    )
+    public_leakage = np.asarray(
+        [branch.public_leakage_bits for branch in branches],
+        dtype=np.float64,
+    )
+    finite_penalty = np.ceil(
+        np.sqrt(
+            np.maximum(retained, 1.0)
+            * math.log2(2.0 / config.key_generation.epsilon_security)
+        )
+    )
+    conditional_min_entropy = np.floor(
+        retained * np.maximum(0.0, 1.0 - np.minimum(1.0, eve_information))
+    )
+    key_margin = (
+        conditional_min_entropy
+        - public_leakage
+        - finite_penalty
+        - config.key_generation.privacy_margin_bits
+    )
+    post_kdr = np.asarray(
+        [branch.post_reconciliation_kdr for branch in branches],
+        dtype=np.float64,
+    )
+    final_key_bits = np.asarray(
+        [branch.final_key_bits for branch in branches],
+        dtype=np.float64,
+    )
+    final_key_success = np.asarray(
+        [branch.final_key_bits > 0 and branch.final_keys_match for branch in branches],
+        dtype=np.float64,
+    )
+    reconciliation_success = (
+        (retained > 0.0) & np.isclose(post_kdr, 0.0, atol=1.0e-12)
+    ).astype(np.float64)
+
+    prefix = branch_name
+    return {
+        f"{prefix}_retained_bits": float(np.mean(retained)),
+        f"{prefix}_mutual_information_ab": float(
+            np.mean([branch.mutual_information_ab for branch in branches])
+        ),
+        f"{prefix}_eve_information": float(np.mean(eve_information)),
+        f"{prefix}_reciprocity": float(
+            np.mean([branch.reciprocity for branch in branches])
+        ),
+        f"{prefix}_raw_kdr": float(
+            np.mean([branch.raw_kdr for branch in branches])
+        ),
+        f"{prefix}_post_reconciliation_kdr": float(np.mean(post_kdr)),
+        f"{prefix}_public_leakage_bits": float(np.mean(public_leakage)),
+        f"{prefix}_finite_penalty_bits": float(np.mean(finite_penalty)),
+        f"{prefix}_conditional_min_entropy_bits": float(
+            np.mean(conditional_min_entropy)
+        ),
+        f"{prefix}_key_margin_bits": float(np.mean(key_margin)),
+        f"{prefix}_positive_key_margin_probability": float(
+            np.mean(key_margin > 0.0)
+        ),
+        f"{prefix}_reconciliation_success_probability": float(
+            np.mean(reconciliation_success)
+        ),
+        f"{prefix}_finite_length_secret_bits": float(
+            np.mean([branch.finite_length_secret_bits for branch in branches])
+        ),
+        f"{prefix}_final_key_bits": float(np.mean(final_key_bits)),
+        f"{prefix}_final_key_success_probability": float(
+            np.mean(final_key_success)
+        ),
+        f"{prefix}_zero_final_key_probability": float(
+            np.mean(final_key_bits <= 0.0)
+        ),
+        f"{prefix}_secure_key_rate_bps": float(
+            np.mean([branch.secure_key_rate_bps for branch in branches])
+        ),
+    }
+
+
 def evaluate_policy(
     config: FullSchemeConfig,
     policy: Callable[[np.ndarray], np.ndarray],
@@ -227,35 +323,48 @@ def evaluate_policy(
         # 在具有历史状态的最终时隙执行正式协议评价。
         action = policy(state)
 
-        summary = env.evaluate_action(
+        summary, objective_sample_rows = env.evaluate_action_with_samples(
             action,
             full_protocol=full_protocol,
             objective_samples=objective_samples,
         )
-        rows.append(
-            {
-                "episode": float(episode),
-                "architecture": config.environment.architecture,
-                "robust_reward": summary.robust_reward,
-                "mean_reward": summary.mean_reward,
-                "cvar_reward": summary.cvar_reward,
-                "worst_reward": summary.worst_reward,
-                "mean_secure_key_rate_bps": summary.mean_secure_key_rate_bps,
-                "cvar_secure_key_rate_bps": summary.cvar_secure_key_rate_bps,
-                "worst_secure_key_rate_bps": summary.worst_secure_key_rate_bps,
-                "mean_raw_kdr": summary.mean_raw_kdr,
-                "cvar_raw_kdr": summary.cvar_raw_kdr,
-                "worst_raw_kdr": summary.worst_raw_kdr,
-                "mean_post_reconciliation_kdr": summary.mean_post_reconciliation_kdr,
-                "cvar_post_reconciliation_kdr": summary.cvar_post_reconciliation_kdr,
-                "worst_post_reconciliation_kdr": summary.worst_post_reconciliation_kdr,
-                "mean_reciprocity": summary.mean_reciprocity,
-                "mean_surface_power_watt": summary.mean_surface_power_watt,
-                "power_violation_probability": summary.power_violation_probability,
-                "mean_active_elements": summary.mean_active_elements,
-                "mean_projection_scale": summary.mean_projection_scale,
-            }
+        row: dict[str, float | str] = {
+            "episode": float(episode),
+            "architecture": config.environment.architecture,
+            "robust_reward": summary.robust_reward,
+            "mean_reward": summary.mean_reward,
+            "cvar_reward": summary.cvar_reward,
+            "worst_reward": summary.worst_reward,
+            "mean_secure_key_rate_bps": summary.mean_secure_key_rate_bps,
+            "cvar_secure_key_rate_bps": summary.cvar_secure_key_rate_bps,
+            "worst_secure_key_rate_bps": summary.worst_secure_key_rate_bps,
+            "mean_raw_kdr": summary.mean_raw_kdr,
+            "cvar_raw_kdr": summary.cvar_raw_kdr,
+            "worst_raw_kdr": summary.worst_raw_kdr,
+            "mean_post_reconciliation_kdr": summary.mean_post_reconciliation_kdr,
+            "cvar_post_reconciliation_kdr": summary.cvar_post_reconciliation_kdr,
+            "worst_post_reconciliation_kdr": summary.worst_post_reconciliation_kdr,
+            "mean_reciprocity": summary.mean_reciprocity,
+            "mean_surface_power_watt": summary.mean_surface_power_watt,
+            "power_violation_probability": summary.power_violation_probability,
+            "mean_active_elements": summary.mean_active_elements,
+            "mean_projection_scale": summary.mean_projection_scale,
+        }
+        row.update(
+            _branch_protocol_diagnostics(
+                objective_sample_rows,
+                "transmission",
+                config,
+            )
         )
+        row.update(
+            _branch_protocol_diagnostics(
+                objective_sample_rows,
+                "reflection",
+                config,
+            )
+        )
+        rows.append(row)
         completed_episodes = episode + 1
 
         if (

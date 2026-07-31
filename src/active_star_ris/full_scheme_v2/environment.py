@@ -178,13 +178,19 @@ class ActiveStarRisKeyEnvironment:
             architecture_feasible=projection.unit_gain_feasible,
         )
 
-    def evaluate_action(
+    def evaluate_action_with_samples(
         self,
         action: np.ndarray,
         *,
         full_protocol: bool = False,
         objective_samples: int | None = None,
-    ) -> RobustSummary:
+    ) -> tuple[RobustSummary, list[ObjectiveSample]]:
+        """Evaluate one action and retain the underlying robust samples.
+
+        Training only needs the aggregated RobustSummary, while protocol
+        diagnosis also needs each Monte-Carlo sample's branch key metrics.
+        Keeping this as a separate method preserves the training interface.
+        """
         count = (
             self.config.robust.objective_samples
             if objective_samples is None
@@ -202,7 +208,22 @@ class ActiveStarRisKeyEnvironment:
             )
             for _ in range(count)
         ]
-        return aggregate_robust_samples(samples, self.config.robust)
+        summary = aggregate_robust_samples(samples, self.config.robust)
+        return summary, samples
+
+    def evaluate_action(
+        self,
+        action: np.ndarray,
+        *,
+        full_protocol: bool = False,
+        objective_samples: int | None = None,
+    ) -> RobustSummary:
+        summary, _ = self.evaluate_action_with_samples(
+            action,
+            full_protocol=full_protocol,
+            objective_samples=objective_samples,
+        )
+        return summary
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         summary = self.evaluate_action(action, full_protocol=False)
