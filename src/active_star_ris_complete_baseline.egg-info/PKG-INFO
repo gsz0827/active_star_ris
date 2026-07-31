@@ -4,6 +4,7 @@ Version: 0.1.0
 Summary: Complete reproducible baseline for passive and partially active STAR-RIS simulations
 Requires-Python: >=3.11
 Requires-Dist: numpy<3,>=1.26
+Requires-Dist: numba
 Requires-Dist: matplotlib<4,>=3.8
 Requires-Dist: PyYAML<7,>=6.0
 Requires-Dist: torch<3,>=2.2

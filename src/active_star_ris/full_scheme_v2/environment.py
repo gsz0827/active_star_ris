@@ -97,15 +97,17 @@ class ActiveStarRisKeyEnvironment:
             raise RuntimeError(f"state size mismatch: {state.size} != {self.state_dimension}")
         return np.clip(state, -10.0, 10.0).astype(np.float32)
 
-    def _evaluate_once(
-        self,
-        action: np.ndarray,
-        *,
-        full_protocol: bool,
-    ) -> ObjectiveSample:
-        channels, csi, hardware_state = self._require_initialized()
+    def _prepare_action(self, action: np.ndarray) -> tuple[Any, Any]:
+        """Decode and project one action exactly once per robust evaluation.
+
+        Action decoding and gain projection depend on the action and the current
+        control CSI, but not on the Monte-Carlo hardware/channel realization.
+        Reusing them therefore removes deterministic duplicate work without
+        reducing the number of robust samples or changing the uncertainty model.
+        """
+        _, csi, _ = self._require_initialized()
         ideal = decode_action(
-            action,
+            np.asarray(action, dtype=np.float64),
             num_elements=self.num_elements,
             architecture=self.config.environment.architecture,
             config=self.config.hardware,
@@ -117,7 +119,16 @@ class ActiveStarRisKeyEnvironment:
             self.config.hardware,
             self.config.power,
         )
-        projected = replace_gain(ideal, projection)
+        return replace_gain(ideal, projection), projection
+
+    def _evaluate_once(
+        self,
+        projected: Any,
+        projection: Any,
+        *,
+        full_protocol: bool,
+    ) -> ObjectiveSample:
+        channels, _, hardware_state = self._require_initialized()
         coefficients = realize_coefficients(
             projected,
             hardware_state,
@@ -174,9 +185,21 @@ class ActiveStarRisKeyEnvironment:
         full_protocol: bool = False,
         objective_samples: int | None = None,
     ) -> RobustSummary:
-        count = objective_samples or self.config.robust.objective_samples
+        count = (
+            self.config.robust.objective_samples
+            if objective_samples is None
+            else int(objective_samples)
+        )
+        if count < 1:
+            raise ValueError("objective_samples must be positive")
+
+        projected, projection = self._prepare_action(action)
         samples = [
-            self._evaluate_once(np.asarray(action, dtype=np.float64), full_protocol=full_protocol)
+            self._evaluate_once(
+                projected,
+                projection,
+                full_protocol=full_protocol,
+            )
             for _ in range(count)
         ]
         return aggregate_robust_samples(samples, self.config.robust)

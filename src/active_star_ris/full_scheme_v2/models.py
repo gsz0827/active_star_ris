@@ -162,3 +162,6 @@ class RobustSummary:
     power_violation_probability: float
     mean_active_elements: float
     mean_projection_scale: float
+    mean_post_reconciliation_kdr: float = 0.0
+    cvar_post_reconciliation_kdr: float = 0.0
+    worst_post_reconciliation_kdr: float = 0.0

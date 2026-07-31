@@ -1,0 +1,56 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "STAR-RIS 真实性能基准",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/benchmark_full_scheme_v2.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--config",
+        "configs/full_scheme_v2_paper_corrected.yaml",
+        "--architecture",
+        "partially_active_fixed",
+        "--steps",
+        "10"
+      ]
+    },
+    {
+      "name": "STAR-RIS 单架构预实验",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/train_full_scheme_v2.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--config",
+        "configs/full_scheme_v2_paper_corrected.yaml",
+        "--architecture",
+        "partially_active_fixed",
+        "--seed",
+        "0",
+        "--steps",
+        "5000",
+        "--output-dir",
+        "results/full_scheme_v2/pilot_single/partially_active_fixed/seed_0"
+      ]
+    },
+    {
+      "name": "STAR-RIS 并行 Smoke",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/run_parallel_full_scheme_v2.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--smoke",
+        "--max-workers",
+        "2",
+        "--output-dir",
+        "results/full_scheme_v2/parallel_smoke"
+      ]
+    }
+  ]
+}

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 import numpy as np
+
+from .fast_ar import evolve_gauss_markov
 from numpy.typing import ArrayLike
 
 from .config import ChannelConfig, GeometryConfig
@@ -357,13 +359,37 @@ def evolve_block(
     correlation: float,
     rng: np.random.Generator,
 ) -> ComplexArray:
-    initial_array = np.asarray(initial, dtype=np.complex128)
-    output = np.empty((samples,) + initial_array.shape, dtype=np.complex128)
-    output[0] = initial_array
-    for index in range(1, samples):
-        output[index] = gauss_markov_update(output[index - 1], correlation, rng)
-    return output
+    """Generate one time-correlated block with a compiled sequential recurrence.
 
+    The number of samples and the channel law are unchanged. Random values are
+    generated in the same real/imaginary order as the former Python loop.
+    """
+    if samples < 1:
+        raise ValueError("samples must be positive")
+
+    initial_array = np.asarray(initial, dtype=np.complex128)
+    original_shape = initial_array.shape
+    initial_flat = initial_array.reshape(-1)
+
+    if samples == 1:
+        return np.asarray(initial_array[None, ...], dtype=np.complex128)
+
+    # The original update does not consume random numbers for an all-zero block.
+    if not np.any(initial_flat):
+        return np.zeros((samples,) + original_shape, dtype=np.complex128)
+
+    # One batched call preserves the original RNG ordering:
+    # real(t, all elements), imag(t, all elements), then t+1.
+    standard = rng.normal(size=(samples - 1, 2, initial_flat.size))
+    result_flat = evolve_gauss_markov(
+        initial_flat,
+        np.asarray(standard, dtype=np.float64),
+        float(correlation),
+    )
+    return np.asarray(
+        result_flat.reshape((samples,) + original_shape),
+        dtype=np.complex128,
+    )
 
 def delayed_reverse_block(
     forward: ComplexArray,

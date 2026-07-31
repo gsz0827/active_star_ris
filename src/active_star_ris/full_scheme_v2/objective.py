@@ -81,6 +81,9 @@ def aggregate_robust_samples(
     mean_kdr, cvar_kdr, worst_kdr = stats(
         lambda sample: sample.key_metrics.weighted_raw_kdr
     )
+    mean_post_kdr, cvar_post_kdr, worst_post_kdr = stats(
+        lambda sample: sample.key_metrics.weighted_post_reconciliation_kdr
+    )
     mean_reciprocity, cvar_reciprocity, worst_reciprocity = stats(
         lambda sample: sample.key_metrics.weighted_reciprocity
     )
@@ -115,4 +118,7 @@ def aggregate_robust_samples(
         ),
         mean_active_elements=float(np.mean([sample.active_elements for sample in samples])),
         mean_projection_scale=float(np.mean([sample.projection_scale for sample in samples])),
+        mean_post_reconciliation_kdr=mean_post_kdr,
+        cvar_post_reconciliation_kdr=cvar_post_kdr,
+        worst_post_reconciliation_kdr=worst_post_kdr,
     )

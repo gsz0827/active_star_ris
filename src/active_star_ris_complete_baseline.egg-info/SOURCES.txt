@@ -32,14 +32,15 @@ src/active_star_ris/full_scheme_v2/channels.py
 src/active_star_ris/full_scheme_v2/config.py
 src/active_star_ris/full_scheme_v2/environment.py
 src/active_star_ris/full_scheme_v2/experiments.py
+src/active_star_ris/full_scheme_v2/fast_ar.py
 src/active_star_ris/full_scheme_v2/hardware.py
 src/active_star_ris/full_scheme_v2/key_protocol.py
 src/active_star_ris/full_scheme_v2/models.py
 src/active_star_ris/full_scheme_v2/objective.py
 src/active_star_ris/full_scheme_v2/power.py
 src/active_star_ris/full_scheme_v2/probing.py
-src/active_star_ris/full_scheme_v2/security.py
 src/active_star_ris/full_scheme_v2/td3.py
+src/active_star_ris/legacy/security_v2_draft.py
 src/active_star_ris_complete_baseline.egg-info/PKG-INFO
 src/active_star_ris_complete_baseline.egg-info/SOURCES.txt
 src/active_star_ris_complete_baseline.egg-info/dependency_links.txt
@@ -66,6 +67,7 @@ tests/test_quantized_security.py
 tests/test_quantized_sweep_outputs.py
 tests/test_rl_environment.py
 tests/test_secure_key_generation.py
+tests/test_speed_quality_patch_v2.py
 tests/test_star_key_system.py
 tests/test_surface.py
 tests/test_surface_power.py

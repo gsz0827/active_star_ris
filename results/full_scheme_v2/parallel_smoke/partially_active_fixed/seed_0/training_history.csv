@@ -1,0 +1,3 @@
+﻿step,reward,mean_secure_key_rate_bps,mean_raw_kdr,mean_reciprocity,mean_active_elements,mean_projection_scale,mean_surface_power_watt,power_violation_probability,critic_loss,actor_loss
+0.0,-0.0332862439610622,600.3665959578423,0.2847735879031569,0.6100671708187761,8.0,0.9894704038768269,0.2940017520055105,0.0,nan,nan
+9.0,0.0006045289572609788,1654.3467089939,0.30273308119966325,0.6080138647599069,8.0,1.0,0.2940019841319641,0.0,nan,nan

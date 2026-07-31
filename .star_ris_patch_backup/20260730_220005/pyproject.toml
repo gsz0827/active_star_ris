@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "active-star-ris-complete-baseline"
+version = "0.1.0"
+description = "Complete reproducible baseline for passive and partially active STAR-RIS simulations"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26,<3",
+  "matplotlib>=3.8,<4",
+  "PyYAML>=6.0,<7",
+  "torch>=2.2,<3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+where = ["src"]

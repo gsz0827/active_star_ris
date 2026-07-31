@@ -1,0 +1,147 @@
+geometry:
+  carrier_frequency_hz: 3500000000.0
+  ris_rows: 4
+  ris_columns: 8
+  element_spacing_wavelengths: 0.5
+  controller_position_m: [-15.0, 0.0, 2.0]
+  ris_position_m: [0.0, 0.0, 5.0]
+  transmission_user_position_m: [12.0, 8.0, 1.5]
+  reflection_user_position_m: [-10.0, 9.0, 1.5]
+  eve_transmission_position_m: [10.0, 12.0, 1.5]
+  eve_reflection_position_m: [-8.0, 13.0, 1.5]
+  reference_distance_m: 1.0
+  path_loss_exponent_ris: 2.2
+  path_loss_exponent_direct: 3.0
+  additional_ris_loss_db: 0.0
+  additional_direct_loss_db: 20.0
+
+channel:
+  rician_k_factor: 3.0
+  within_block_correlation: 0.995
+  between_step_correlation: 0.98
+  forward_reverse_delay_seconds: 0.001
+  channel_coherence_time_seconds: 0.01
+  eve_enabled: true
+  eve_spatial_correlation: 0.20
+  control_csi_model: lmmse
+  control_csi_nmse_db: -15.0
+  csi_pilot_symbols: 32
+  csi_pilot_power: 0.1
+  csi_receiver_noise_variance: 2.0e-14
+
+probing:
+  samples_per_step: 256
+  pilot_symbols_controller: 16
+  pilot_symbols_transmission_user: 16
+  pilot_symbols_reflection_user: 16
+  pilot_power_controller: 0.1
+  pilot_power_transmission_user: 0.1
+  pilot_power_reflection_user: 0.1
+  input_referred_amplifier_noise_variance: 1.0e-12
+  receiver_noise_variance_controller: 2.0e-14
+  receiver_noise_variance_transmission_user: 2.0e-14
+  receiver_noise_variance_reflection_user: 2.0e-14
+  receiver_noise_variance_eve: 2.0e-13
+  pilot_symbol_duration_seconds: 1.0e-6
+  forward_reverse_guard_seconds: 5.0e-7
+  branch_switch_guard_seconds: 1.0e-6
+
+hardware:
+  active_ratio: 0.25
+  maximum_active_gain: 4.0
+  phase_coupling_mode: quadrature
+  passive_transmission_insertion_loss_db: 1.0
+  passive_reflection_insertion_loss_db: 1.0
+  static_gain_error_std_db: 0.20
+  directional_gain_error_std_db: 0.10
+  static_phase_error_std_rad: 0.05
+  directional_phase_error_std_rad: 0.03
+  fast_phase_jitter_std_rad: 0.01
+  fast_jitter_forward_reverse_correlation: 0.0
+  transmission_split_error_std: 0.02
+  transmission_amplitude_phase_coupling_rad_per_db: 0.01
+  reflection_amplitude_phase_coupling_rad_per_db: 0.01
+  phase_quantization_bits: 4
+  gain_quantization_bits: 4
+  per_active_element_saturation_power: 5.0e-7
+
+power:
+  maximum_rf_output_power: 1.0e-6
+  maximum_total_dc_power: 1.0
+  amplifier_efficiency: 0.35
+  controller_static_power: 0.10
+  passive_element_control_power: 0.001
+  active_element_control_power: 0.005
+  active_element_bias_power: 0.01
+  switching_network_static_power: 0.05
+  controller_time_fraction: 0.3333333333333333
+  transmission_time_fraction: 0.3333333333333333
+  reflection_time_fraction: 0.3333333333333333
+  projection_iterations: 50
+  projection_tolerance: 1.0e-9
+  csi_power_margin_std: 2.0
+  hardware_gain_margin_db: 0.60
+
+key_generation:
+  feature: real
+  guard_band_sigma: 0.10
+  selection_policy: alice
+  reconciliation_efficiency: 1.15
+  initial_block_size: 8
+  reconciliation_passes: 8
+  maximum_block_doublings: 3
+  verification_tag_bits: 32
+  privacy_margin_bits: 32
+  maximum_final_key_bits: 256
+  epsilon_security: 1.0e-9
+  public_channel_rate_bps: 1000000.0
+  fixed_processing_delay_seconds: 0.0
+
+objective:
+  key_rate_weight: 1.0
+  raw_kdr_weight: 0.25
+  post_reconciliation_kdr_weight: 0.50
+  reciprocity_weight: 0.20
+  surface_power_weight: 0.10
+  constraint_violation_weight: 10.0
+  key_rate_reference_bps: 10000.0
+  raw_kdr_reference: 0.50
+  post_reconciliation_kdr_reference: 0.01
+  surface_power_reference_watt: 1.0
+  transmission_weight: 0.5
+  reflection_weight: 0.5
+
+robust:
+  objective_samples: 16
+  cvar_alpha: 0.25
+  mean_weight: 0.5
+  cvar_weight: 0.5
+
+environment:
+  architecture: partially_active_fixed
+  episode_length: 100
+  seed: 0
+
+td3:
+  hidden_dimensions: [256, 256]
+  actor_learning_rate: 0.0001
+  critic_learning_rate: 0.001
+  discount_factor: 0.99
+  target_update_rate: 0.005
+  policy_noise: 0.20
+  noise_clip: 0.50
+  policy_delay: 2
+  replay_capacity: 200000
+  batch_size: 256
+  warmup_steps: 2000
+  exploration_noise: 0.10
+
+experiment:
+  training_steps: 100000
+  evaluation_episodes: 100
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+  architectures:
+    - passive
+    - partially_active_fixed
+    - partially_active_dynamic
+    - fully_active_fixed
