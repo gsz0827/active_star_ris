@@ -183,42 +183,88 @@ def evaluate_branch_key_metrics(
         observations.observation_bob,
     )
     eve_information = max(
-        gaussian_mutual_information(observations.observation_alice, observations.observation_eve_forward),
-        gaussian_mutual_information(observations.observation_alice, observations.observation_eve_reverse),
-        gaussian_mutual_information(observations.observation_bob, observations.observation_eve_forward),
-        gaussian_mutual_information(observations.observation_bob, observations.observation_eve_reverse),
+        gaussian_mutual_information(
+            observations.observation_alice,
+            observations.observation_eve_forward,
+        ),
+        gaussian_mutual_information(
+            observations.observation_alice,
+            observations.observation_eve_reverse,
+        ),
+        gaussian_mutual_information(
+            observations.observation_bob,
+            observations.observation_eve_forward,
+        ),
+        gaussian_mutual_information(
+            observations.observation_bob,
+            observations.observation_eve_reverse,
+        ),
     )
-    reciprocity = float(np.clip(abs(complex_correlation(
-        observations.observation_alice,
-        observations.observation_bob,
-    )), 0.0, 1.0))
+    reciprocity = float(
+        np.clip(
+            abs(
+                complex_correlation(
+                    observations.observation_alice,
+                    observations.observation_bob,
+                )
+            ),
+            0.0,
+            1.0,
+        )
+    )
+
     reconciliation_leakage_bound = int(
-        math.ceil(key_config.reconciliation_efficiency * retained * binary_entropy(raw_kdr))
+        math.ceil(
+            key_config.reconciliation_efficiency
+            * retained
+            * binary_entropy(raw_kdr)
+        )
     )
-    eve_leakage_bound = int(math.ceil(retained * min(1.0, eve_information)))
+    conditional_min_entropy_bound = int(
+        math.floor(
+            retained
+            * max(0.0, 1.0 - min(1.0, eve_information))
+        )
+    )
     finite_penalty = int(
-        math.ceil(np.sqrt(max(retained, 1) * np.log2(2.0 / key_config.epsilon_security)))
+        math.ceil(
+            np.sqrt(
+                max(retained, 1)
+                * np.log2(2.0 / key_config.epsilon_security)
+            )
+        )
     )
-    # 训练阶段使用高斯秘密密钥率下界代理，而不是把合法链路互信息
-    # 直接称为最终KGR。reconciliation_efficiency >= 1 表示协调开销。
-    secret_information_per_retained_sample = max(
-        0.0,
-        mi_ab / key_config.reconciliation_efficiency - eve_information,
+
+    # 训练和正式评价共用同一个有限长度密钥余量定义。训练阶段不运行
+    # Cascade，而使用协调泄漏上界；正式评价使用实际公开泄漏。
+    public_leakage = (
+        reconciliation_leakage_bound + key_config.verification_tag_bits
+        if retained
+        else 0
     )
-    secret_bound = max(
-        0,
-        int(math.floor(retained * min(1.0, secret_information_per_retained_sample)))
+    key_margin_bits = (
+        conditional_min_entropy_bound
+        - public_leakage
         - finite_penalty
-        - key_config.privacy_margin_bits,
+        - key_config.privacy_margin_bits
     )
-    # 未执行实际协调时，不伪造“协调后KDR”；训练目标中的协调代价已经
-    # 由秘密密钥率下界吸收。正式评价时会覆盖为实际协议结果。
+    finite_length_secret_bits = min(
+        key_config.maximum_final_key_bits,
+        max(0, key_margin_bits),
+    )
+
+    # 负余量必须保留为训练信号，不能提前截断为零。
     post_kdr = 0.0 if not full_protocol else raw_kdr
-    public_leakage = reconciliation_leakage_bound
     final_key_bits = 0
     final_match = False
+
     if full_protocol and retained:
-        reconciled_bob, parity_leakage = cascade_reconcile(alice_bits, bob_bits, key_config, rng)
+        reconciled_bob, parity_leakage = cascade_reconcile(
+            alice_bits,
+            bob_bits,
+            key_config,
+            rng,
+        )
         post_kdr = float(np.mean(alice_bits != reconciled_bob))
         verified = verification_passed(
             alice_bits,
@@ -226,19 +272,18 @@ def evaluate_branch_key_metrics(
             key_config.verification_tag_bits,
         )
         public_leakage = parity_leakage + key_config.verification_tag_bits
-        conditional_min_entropy_bound = int(
-            math.floor(retained * max(0.0, 1.0 - min(1.0, eve_information)))
+        key_margin_bits = (
+            conditional_min_entropy_bound
+            - public_leakage
+            - finite_penalty
+            - key_config.privacy_margin_bits
         )
-        final_key_bits = min(
+        finite_length_secret_bits = min(
             key_config.maximum_final_key_bits,
-            max(
-                0,
-                conditional_min_entropy_bound
-                - public_leakage
-                - finite_penalty
-                - key_config.privacy_margin_bits,
-            ),
+            max(0, key_margin_bits),
         )
+        final_key_bits = finite_length_secret_bits
+
         if verified and final_key_bits > 0:
             seed = rng.integers(
                 0,
@@ -253,10 +298,18 @@ def evaluate_branch_key_metrics(
                 final_key_bits = 0
         else:
             final_key_bits = 0
-    secret_bits_for_rate = final_key_bits if full_protocol else secret_bound
+
+    secret_bits_for_rate = (
+        final_key_bits if full_protocol else finite_length_secret_bits
+    )
     public_time = public_leakage / key_config.public_channel_rate_bps
-    duration = probing_duration_seconds(probing) + public_time + key_config.fixed_processing_delay_seconds
+    duration = (
+        probing_duration_seconds(probing)
+        + public_time
+        + key_config.fixed_processing_delay_seconds
+    )
     secure_rate = secret_bits_for_rate / max(duration, 1.0e-12)
+
     return BranchKeyMetrics(
         mutual_information_ab=mi_ab,
         eve_information=eve_information,
@@ -265,12 +318,14 @@ def evaluate_branch_key_metrics(
         retained_bits=retained,
         post_reconciliation_kdr=post_kdr,
         public_leakage_bits=public_leakage,
-        finite_length_secret_bits=secret_bound,
-        final_key_bits=final_key_bits,
+        finite_length_secret_bits=int(finite_length_secret_bits),
+        final_key_bits=int(final_key_bits),
         final_keys_match=final_match,
         secure_key_rate_bps=float(secure_rate),
+        finite_penalty_bits=finite_penalty,
+        conditional_min_entropy_bits=conditional_min_entropy_bound,
+        key_margin_bits=float(key_margin_bits),
     )
-
 
 def evaluate_joint_key_metrics(
     transmission: BranchObservations,
@@ -282,18 +337,36 @@ def evaluate_joint_key_metrics(
     *,
     full_protocol: bool,
 ) -> JointKeyMetrics:
-    t = evaluate_branch_key_metrics(transmission, key_config, probing, rng, full_protocol=full_protocol)
-    r = evaluate_branch_key_metrics(reflection, key_config, probing, rng, full_protocol=full_protocol)
+    t = evaluate_branch_key_metrics(
+        transmission,
+        key_config,
+        probing,
+        rng,
+        full_protocol=full_protocol,
+    )
+    r = evaluate_branch_key_metrics(
+        reflection,
+        key_config,
+        probing,
+        rng,
+        full_protocol=full_protocol,
+    )
     total_weight = objective.transmission_weight + objective.reflection_weight
     wt = objective.transmission_weight / total_weight
     wr = objective.reflection_weight / total_weight
     return JointKeyMetrics(
         transmission=t,
         reflection=r,
-        weighted_secure_key_rate_bps=wt * t.secure_key_rate_bps + wr * r.secure_key_rate_bps,
+        weighted_secure_key_rate_bps=(
+            wt * t.secure_key_rate_bps + wr * r.secure_key_rate_bps
+        ),
         weighted_raw_kdr=wt * t.raw_kdr + wr * r.raw_kdr,
         weighted_post_reconciliation_kdr=(
-            wt * t.post_reconciliation_kdr + wr * r.post_reconciliation_kdr
+            wt * t.post_reconciliation_kdr
+            + wr * r.post_reconciliation_kdr
         ),
         weighted_reciprocity=wt * t.reciprocity + wr * r.reciprocity,
+        weighted_key_margin_bits=(
+            wt * t.key_margin_bits + wr * r.key_margin_bits
+        ),
     )

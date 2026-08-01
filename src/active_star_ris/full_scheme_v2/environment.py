@@ -168,6 +168,7 @@ class ActiveStarRisKeyEnvironment:
             self.config.objective,
             power_config=self.config.power,
             hardware_config=self.config.hardware,
+            projection_scale=projection.projection_scale,
         )
         return ObjectiveSample(
             reward=reward,

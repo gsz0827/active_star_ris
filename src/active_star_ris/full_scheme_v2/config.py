@@ -300,12 +300,15 @@ class KeyGenerationConfig:
 @dataclass(frozen=True)
 class ObjectiveConfig:
     key_rate_weight: float = 1.0
+    key_margin_weight: float = 0.0
     raw_kdr_weight: float = 0.25
     post_reconciliation_kdr_weight: float = 0.50
     reciprocity_weight: float = 0.20
     surface_power_weight: float = 0.10
+    projection_penalty_weight: float = 0.0
     constraint_violation_weight: float = 10.0
     key_rate_reference_bps: float = 10_000.0
+    key_margin_reference_bits: float = 256.0
     raw_kdr_reference: float = 0.50
     post_reconciliation_kdr_reference: float = 0.01
     surface_power_reference_watt: float = 1.0
@@ -321,13 +324,13 @@ class ObjectiveConfig:
             raise ValueError("branch weights cannot both be zero")
         for name in (
             "key_rate_reference_bps",
+            "key_margin_reference_bits",
             "raw_kdr_reference",
             "post_reconciliation_kdr_reference",
             "surface_power_reference_watt",
         ):
             if getattr(self, name) <= 0.0:
                 raise ValueError(f"{name} must be positive")
-
 
 @dataclass(frozen=True)
 class RobustConfig:

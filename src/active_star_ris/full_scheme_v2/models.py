@@ -107,6 +107,9 @@ class BranchKeyMetrics:
     final_key_bits: int
     final_keys_match: bool
     secure_key_rate_bps: float
+    finite_penalty_bits: int = 0
+    conditional_min_entropy_bits: int = 0
+    key_margin_bits: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -117,7 +120,7 @@ class JointKeyMetrics:
     weighted_raw_kdr: float
     weighted_post_reconciliation_kdr: float
     weighted_reciprocity: float
-
+    weighted_key_margin_bits: float = 0.0
 
 @dataclass(frozen=True)
 class PowerMetrics:
