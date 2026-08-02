@@ -26,7 +26,14 @@ def objective_reward(
         key_metrics.weighted_secure_key_rate_bps
         / config.key_rate_reference_bps
     )
-    key_margin_term = float(
+
+    transmission_margin = float(
+        key_metrics.transmission.key_margin_bits
+    )
+    reflection_margin = float(
+        key_metrics.reflection.key_margin_bits
+    )
+    mean_margin_term = float(
         np.clip(
             key_metrics.weighted_key_margin_bits
             / config.key_margin_reference_bits,
@@ -34,6 +41,23 @@ def objective_reward(
             2.0,
         )
     )
+    worst_branch_margin_term = float(
+        np.clip(
+            min(transmission_margin, reflection_margin)
+            / config.key_margin_reference_bits,
+            -2.0,
+            2.0,
+        )
+    )
+    branch_imbalance_term = float(
+        np.clip(
+            abs(transmission_margin - reflection_margin)
+            / config.key_margin_reference_bits,
+            0.0,
+            2.0,
+        )
+    )
+
     raw_kdr_term = key_metrics.weighted_raw_kdr / config.raw_kdr_reference
     post_kdr_term = (
         key_metrics.weighted_post_reconciliation_kdr
@@ -61,7 +85,9 @@ def objective_reward(
 
     return float(
         config.key_rate_weight * key_term
-        + config.key_margin_weight * key_margin_term
+        + config.key_margin_weight * mean_margin_term
+        + config.worst_branch_key_margin_weight * worst_branch_margin_term
+        - config.branch_imbalance_penalty_weight * branch_imbalance_term
         - config.raw_kdr_weight * raw_kdr_term
         - config.post_reconciliation_kdr_weight * post_kdr_term
         + config.reciprocity_weight * key_metrics.weighted_reciprocity

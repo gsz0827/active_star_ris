@@ -301,6 +301,8 @@ class KeyGenerationConfig:
 class ObjectiveConfig:
     key_rate_weight: float = 1.0
     key_margin_weight: float = 0.0
+    worst_branch_key_margin_weight: float = 0.0
+    branch_imbalance_penalty_weight: float = 0.0
     raw_kdr_weight: float = 0.25
     post_reconciliation_kdr_weight: float = 0.50
     reciprocity_weight: float = 0.20
