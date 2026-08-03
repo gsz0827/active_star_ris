@@ -303,6 +303,7 @@ class ObjectiveConfig:
     key_margin_weight: float = 0.0
     worst_branch_key_margin_weight: float = 0.0
     branch_imbalance_penalty_weight: float = 0.0
+    security_advantage_weight: float = 0.0
     raw_kdr_weight: float = 0.25
     post_reconciliation_kdr_weight: float = 0.50
     reciprocity_weight: float = 0.20
@@ -311,22 +312,29 @@ class ObjectiveConfig:
     constraint_violation_weight: float = 10.0
     key_rate_reference_bps: float = 10_000.0
     key_margin_reference_bits: float = 256.0
+    security_advantage_reference: float = 1.0
     raw_kdr_reference: float = 0.50
     post_reconciliation_kdr_reference: float = 0.01
     surface_power_reference_watt: float = 1.0
     transmission_weight: float = 0.5
     reflection_weight: float = 0.5
+    margin_transform: str = "hard_clip"
 
     def validate(self) -> None:
         for item in fields(self):
             value = getattr(self, item.name)
-            if value < 0.0:
+            if isinstance(value, (int, float)) and value < 0.0:
                 raise ValueError(f"{item.name} cannot be negative")
+        if self.margin_transform not in {"hard_clip", "tanh", "asinh"}:
+            raise ValueError(
+                "margin_transform must be one of: hard_clip, tanh, asinh"
+            )
         if self.transmission_weight + self.reflection_weight <= 0.0:
             raise ValueError("branch weights cannot both be zero")
         for name in (
             "key_rate_reference_bps",
             "key_margin_reference_bits",
+            "security_advantage_reference",
             "raw_kdr_reference",
             "post_reconciliation_kdr_reference",
             "surface_power_reference_watt",
