@@ -13,7 +13,7 @@ from .config import (
 from .models import JointKeyMetrics, ObjectiveSample, PowerMetrics, RobustSummary
 
 
-def objective_reward(
+def objective_reward_components(
     key_metrics: JointKeyMetrics,
     power_metrics: PowerMetrics,
     config: ObjectiveConfig,
@@ -21,41 +21,32 @@ def objective_reward(
     power_config: PowerConfig,
     hardware_config: HardwareConfig,
     projection_scale: float = 1.0,
-) -> float:
+) -> dict[str, float]:
     key_term = (
         key_metrics.weighted_secure_key_rate_bps
         / config.key_rate_reference_bps
     )
 
-    transmission_margin = float(
-        key_metrics.transmission.key_margin_bits
+    transmission_margin = float(key_metrics.transmission.key_margin_bits)
+    reflection_margin = float(key_metrics.reflection.key_margin_bits)
+    mean_margin_raw = (
+        key_metrics.weighted_key_margin_bits
+        / config.key_margin_reference_bits
     )
-    reflection_margin = float(
-        key_metrics.reflection.key_margin_bits
+    worst_branch_margin_raw = (
+        min(transmission_margin, reflection_margin)
+        / config.key_margin_reference_bits
     )
-    mean_margin_term = float(
-        np.clip(
-            key_metrics.weighted_key_margin_bits
-            / config.key_margin_reference_bits,
-            -2.0,
-            2.0,
-        )
+    branch_imbalance_raw = (
+        abs(transmission_margin - reflection_margin)
+        / config.key_margin_reference_bits
     )
+    mean_margin_term = float(np.clip(mean_margin_raw, -2.0, 2.0))
     worst_branch_margin_term = float(
-        np.clip(
-            min(transmission_margin, reflection_margin)
-            / config.key_margin_reference_bits,
-            -2.0,
-            2.0,
-        )
+        np.clip(worst_branch_margin_raw, -2.0, 2.0)
     )
     branch_imbalance_term = float(
-        np.clip(
-            abs(transmission_margin - reflection_margin)
-            / config.key_margin_reference_bits,
-            0.0,
-            2.0,
-        )
+        np.clip(branch_imbalance_raw, 0.0, 2.0)
     )
 
     raw_kdr_term = key_metrics.weighted_raw_kdr / config.raw_kdr_reference
@@ -83,18 +74,73 @@ def objective_reward(
         + power_metrics.saturation_violation / saturation_scale
     )
 
-    return float(
-        config.key_rate_weight * key_term
-        + config.key_margin_weight * mean_margin_term
-        + config.worst_branch_key_margin_weight * worst_branch_margin_term
-        - config.branch_imbalance_penalty_weight * branch_imbalance_term
-        - config.raw_kdr_weight * raw_kdr_term
-        - config.post_reconciliation_kdr_weight * post_kdr_term
-        + config.reciprocity_weight * key_metrics.weighted_reciprocity
-        - config.surface_power_weight * power_term
-        - config.projection_penalty_weight * projection_penalty
-        - config.constraint_violation_weight * normalized_violation**2
+    components = {
+        "key_rate_component": config.key_rate_weight * key_term,
+        "mean_margin_component": config.key_margin_weight * mean_margin_term,
+        "worst_branch_margin_component": (
+            config.worst_branch_key_margin_weight * worst_branch_margin_term
+        ),
+        "branch_imbalance_penalty_component": (
+            -config.branch_imbalance_penalty_weight * branch_imbalance_term
+        ),
+        "raw_kdr_penalty_component": -config.raw_kdr_weight * raw_kdr_term,
+        "post_kdr_penalty_component": (
+            -config.post_reconciliation_kdr_weight * post_kdr_term
+        ),
+        "reciprocity_component": (
+            config.reciprocity_weight * key_metrics.weighted_reciprocity
+        ),
+        "surface_power_penalty_component": (
+            -config.surface_power_weight * power_term
+        ),
+        "projection_penalty_component": (
+            -config.projection_penalty_weight * projection_penalty
+        ),
+        "constraint_penalty_component": (
+            -config.constraint_violation_weight * normalized_violation**2
+        ),
+        "transmission_margin_normalized": (
+            transmission_margin / config.key_margin_reference_bits
+        ),
+        "reflection_margin_normalized": (
+            reflection_margin / config.key_margin_reference_bits
+        ),
+        "mean_margin_normalized_raw": float(mean_margin_raw),
+        "worst_margin_normalized_raw": float(worst_branch_margin_raw),
+        "branch_imbalance_normalized_raw": float(branch_imbalance_raw),
+        "mean_margin_clipped": float(abs(mean_margin_raw) > 2.0),
+        "worst_margin_clipped": float(abs(worst_branch_margin_raw) > 2.0),
+        "branch_imbalance_clipped": float(branch_imbalance_raw > 2.0),
+    }
+    components["reward_reconstructed"] = float(
+        sum(
+            value
+            for name, value in components.items()
+            if name.endswith("_component")
+        )
     )
+    return components
+
+
+def objective_reward(
+    key_metrics: JointKeyMetrics,
+    power_metrics: PowerMetrics,
+    config: ObjectiveConfig,
+    *,
+    power_config: PowerConfig,
+    hardware_config: HardwareConfig,
+    projection_scale: float = 1.0,
+) -> float:
+    components = objective_reward_components(
+        key_metrics,
+        power_metrics,
+        config,
+        power_config=power_config,
+        hardware_config=hardware_config,
+        projection_scale=projection_scale,
+    )
+    return float(components["reward_reconstructed"])
+
 
 def aggregate_robust_samples(
     samples: list[ObjectiveSample],

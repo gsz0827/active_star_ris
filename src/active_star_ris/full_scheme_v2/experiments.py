@@ -13,6 +13,7 @@ import numpy as np
 from .config import FullSchemeConfig
 from .environment import ActiveStarRisKeyEnvironment
 from .models import ObjectiveSample
+from .objective import objective_reward_components
 from .td3 import ReplayBuffer, TD3Agent
 
 
@@ -273,6 +274,61 @@ def _branch_protocol_diagnostics(
     }
 
 
+def _reward_component_diagnostics(
+    samples: list[ObjectiveSample],
+    config: FullSchemeConfig,
+) -> dict[str, float]:
+    if not samples:
+        raise ValueError("reward diagnostics require at least one sample")
+    component_rows = [
+        objective_reward_components(
+            sample.key_metrics,
+            sample.power_metrics,
+            config.objective,
+            power_config=config.power,
+            hardware_config=config.hardware,
+            projection_scale=sample.projection_scale,
+        )
+        for sample in samples
+    ]
+    output: dict[str, float] = {}
+    for key in component_rows[0]:
+        values = np.asarray([row[key] for row in component_rows], dtype=np.float64)
+        output[f"reward_diag_{key}_mean"] = float(np.mean(values))
+        if key.endswith("_clipped"):
+            output[f"reward_diag_{key}_probability"] = float(np.mean(values))
+
+    rewards = np.asarray([sample.reward for sample in samples], dtype=np.float64)
+    margins = np.asarray(
+        [sample.key_metrics.weighted_key_margin_bits for sample in samples],
+        dtype=np.float64,
+    )
+    rates = np.asarray(
+        [sample.key_metrics.weighted_secure_key_rate_bps for sample in samples],
+        dtype=np.float64,
+    )
+
+    def safe_corr(x: np.ndarray, y: np.ndarray) -> float:
+        if x.size < 2 or np.std(x) <= 1.0e-12 or np.std(y) <= 1.0e-12:
+            return float("nan")
+        return float(np.corrcoef(x, y)[0, 1])
+
+    output["reward_diag_reward_margin_correlation"] = safe_corr(rewards, margins)
+    output["reward_diag_reward_skr_correlation"] = safe_corr(rewards, rates)
+    output["reward_diag_reward_reconstruction_max_abs_error"] = float(
+        np.max(
+            np.abs(
+                rewards
+                - np.asarray(
+                    [row["reward_reconstructed"] for row in component_rows],
+                    dtype=np.float64,
+                )
+            )
+        )
+    )
+    return output
+
+
 def evaluate_policy(
     config: FullSchemeConfig,
     policy: Callable[[np.ndarray], np.ndarray],
@@ -361,6 +417,12 @@ def evaluate_policy(
             _branch_protocol_diagnostics(
                 objective_sample_rows,
                 "reflection",
+                config,
+            )
+        )
+        row.update(
+            _reward_component_diagnostics(
+                objective_sample_rows,
                 config,
             )
         )
