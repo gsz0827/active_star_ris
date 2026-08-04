@@ -22,9 +22,11 @@ def _margin_transform(
     """Return the transformed value and its local gradient scale.
 
     ``hard_clip`` preserves the historical reward exactly. ``tanh`` is a
-    bounded smooth alternative. ``asinh`` is smooth and non-saturating, so
-    severe negative finite-key margins remain distinguishable during
-    training. The v2.4 diagnostic configuration uses ``asinh``.
+    bounded smooth alternative. ``asinh`` is smooth and non-saturating.
+    ``zero_softplus`` is centred at zero finite-key margin: negative margins
+    retain a strong gradient, while gains after crossing zero gradually
+    diminish. For non-negative imbalance penalties, ``zero_softplus`` falls
+    back to ``asinh`` so larger branch gaps remain increasingly costly.
     """
     x = max(0.0, float(value)) if nonnegative else float(value)
     if mode == "hard_clip":
@@ -37,6 +39,20 @@ def _margin_transform(
         return transformed, float(1.0 - transformed**2)
     if mode == "asinh":
         return float(np.arcsinh(x)), float(1.0 / np.sqrt(1.0 + x**2))
+    if mode == "zero_softplus":
+        if nonnegative:
+            return float(np.arcsinh(x)), float(1.0 / np.sqrt(1.0 + x**2))
+        # log(2) - softplus(-x) is exactly zero at x=0. It is nearly
+        # linear for severe negative margins and approaches log(2) after
+        # the finite-key margin becomes safely positive.
+        transformed = float(math.log(2.0) - np.logaddexp(0.0, -x))
+        if x >= 0.0:
+            exp_neg = float(np.exp(-x))
+            gradient_scale = exp_neg / (1.0 + exp_neg)
+        else:
+            exp_pos = float(np.exp(x))
+            gradient_scale = 1.0 / (1.0 + exp_pos)
+        return transformed, float(gradient_scale)
     raise ValueError(f"unsupported margin transform: {mode}")
 
 

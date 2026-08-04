@@ -325,9 +325,15 @@ class ObjectiveConfig:
             value = getattr(self, item.name)
             if isinstance(value, (int, float)) and value < 0.0:
                 raise ValueError(f"{item.name} cannot be negative")
-        if self.margin_transform not in {"hard_clip", "tanh", "asinh"}:
+        if self.margin_transform not in {
+            "hard_clip",
+            "tanh",
+            "asinh",
+            "zero_softplus",
+        }:
             raise ValueError(
-                "margin_transform must be one of: hard_clip, tanh, asinh"
+                "margin_transform must be one of: "
+                "hard_clip, tanh, asinh, zero_softplus"
             )
         if self.transmission_weight + self.reflection_weight <= 0.0:
             raise ValueError("branch weights cannot both be zero")
